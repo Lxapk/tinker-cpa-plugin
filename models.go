@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -283,4 +284,197 @@ func stringify(v any) string {
 		return ""
 	}
 	return string(raw)
+}
+
+// toolFields describes the optional inputs a tool accepts.
+//
+// The catalogue is not uniform: gemini_image takes resolution, gpt_image takes
+// quality, flux and grok take neither. Sending a field a tool does not declare is
+// rejected by the upstream's input validation, so the mapping below checks support
+// before adding anything.
+type toolFields struct {
+	AspectRatio bool
+	Resolution  bool // gemini_* image tools
+	Quality     bool // gpt_image
+	Format      bool
+	Enhance     bool
+}
+
+var toolFieldSupport = map[string]toolFields{
+	"gemini_image":       {AspectRatio: true, Resolution: true, Format: true, Enhance: true},
+	"gpt_image":          {AspectRatio: true, Quality: true, Format: true, Enhance: true},
+	"flux_pro_kontext":   {AspectRatio: true, Format: true, Enhance: true},
+	"grok_image":         {AspectRatio: true, Format: true, Enhance: true},
+}
+
+// buildToolInputs turns an OpenAI image request into the tool's input map.
+//
+// OpenAI clients express size as "1024x1024" or "2K"/"4K", and quality as
+// low/medium/high. Tinker instead takes an aspect_ratio string and, on the Gemini
+// tools, a resolution enum. Translating here is what makes "4K" work at all —
+// before this, only the prompt was forwarded and every image came back at the
+// tool's 1K default.
+func buildToolInputs(ref toolRef, prompt string, request []byte) map[string]any {
+	inputs := map[string]any{"prompt": prompt}
+	fields, known := toolFieldSupport[ref.ToolID]
+	if !known || ref.OutputType != "image" {
+		return inputs
+	}
+
+	var body struct {
+		Size       string `json:"size"`
+		Quality    string `json:"quality"`
+		Resolution string `json:"resolution"`
+		Aspect     string `json:"aspect_ratio"`
+		Format     string `json:"output_format"`
+	}
+	_ = json.Unmarshal(request, &body)
+
+	if fields.AspectRatio {
+		if ratio := aspectRatioFrom(body.Aspect, body.Size); ratio != "" {
+			inputs["aspect_ratio"] = ratio
+		}
+	}
+	if fields.Resolution {
+		if res := resolutionFrom(body.Resolution, body.Size); res != "" {
+			inputs["resolution"] = res
+		}
+	}
+	if fields.Quality {
+		if q := qualityFrom(body.Quality, body.Size); q != "" {
+			inputs["quality"] = q
+		}
+	}
+	if fields.Format {
+		if f := normalizeFormat(body.Format); f != "" {
+			inputs["output_format"] = f
+		}
+	}
+	return inputs
+}
+
+// aspectRatioFrom maps an explicit ratio or a WxH size onto Tinker's enum.
+func aspectRatioFrom(explicit, size string) string {
+	if explicit = strings.TrimSpace(explicit); explicit != "" {
+		return explicit
+	}
+	size = strings.ToLower(strings.TrimSpace(size))
+	if size == "" {
+		return ""
+	}
+	parts := strings.SplitN(size, "x", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	var w, h int
+	if _, errW := fmt.Sscanf(parts[0], "%d", &w); errW != nil {
+		return ""
+	}
+	if _, errH := fmt.Sscanf(parts[1], "%d", &h); errH != nil {
+		return ""
+	}
+	if w <= 0 || h <= 0 {
+		return ""
+	}
+	// Ratios are width:height, so the width term multiplies the right-hand side:
+	// a 9:16 portrait satisfies w*16 == h*9. Getting this backwards silently
+	// rotated every landscape request, which is exactly what the test caught.
+	switch {
+	case w == h:
+		return "1:1"
+	case w*16 == h*9:
+		return "9:16"
+	case w*9 == h*16:
+		return "16:9"
+	case w*4 == h*3:
+		return "3:4"
+	case w*3 == h*4:
+		return "4:3"
+	case w*3 == h*2:
+		return "2:3"
+	case w*2 == h*3:
+		return "3:2"
+	}
+	// Any other shape: report the nearest of the two landscape/portrait families
+	// rather than sending a ratio the tool does not accept.
+	if w > h {
+		return "16:9"
+	}
+	return "9:16"
+}
+
+// resolutionFrom maps a size or explicit resolution onto Tinker's enum.
+//
+// Gemini's tools accept 0_5K / 1K / 2K / 4K (the newest also 0_5K). A pixel size
+// is bucketed by its long edge, which is how the app's own UI describes them.
+func resolutionFrom(explicit, size string) string {
+	value := strings.ToLower(strings.TrimSpace(explicit))
+	if value == "" {
+		value = strings.ToLower(strings.TrimSpace(size))
+	}
+	switch value {
+	case "0_5k", "512", "0.5k":
+		return "0_5K"
+	case "1k", "1024":
+		return "1K"
+	case "2k":
+		return "2K"
+	case "4k":
+		return "4K"
+	}
+	// A WxH size: bucket by the long edge.
+	parts := strings.SplitN(value, "x", 2)
+	if len(parts) == 2 {
+		var w, h int
+		if _, errW := fmt.Sscanf(parts[0], "%d", &w); errW == nil {
+			if _, errH := fmt.Sscanf(parts[1], "%d", &h); errH == nil {
+				longest := w
+				if h > longest {
+					longest = h
+				}
+				switch {
+				case longest >= 3000:
+					return "4K"
+				case longest >= 1800:
+					return "2K"
+				case longest >= 900:
+					return "1K"
+				case longest > 0:
+					return "0_5K"
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// qualityFrom maps OpenAI's quality onto gpt_image's enum.
+func qualityFrom(explicit, size string) string {
+	switch strings.ToLower(strings.TrimSpace(explicit)) {
+	case "auto", "low", "medium", "high":
+		return strings.ToLower(strings.TrimSpace(explicit))
+	case "standard":
+		return "medium"
+	case "hd":
+		return "high"
+	}
+	// A large size implies a higher quality tier.
+	switch resolutionFrom("", size) {
+	case "4K":
+		return "high"
+	case "2K":
+		return "medium"
+	}
+	return ""
+}
+
+func normalizeFormat(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "png", "jpeg", "jpg", "webp":
+		if strings.EqualFold(value, "jpg") {
+			return "jpeg"
+		}
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+	return ""
 }

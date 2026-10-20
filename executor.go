@@ -86,7 +86,7 @@ func executorExecute(request []byte) ([]byte, error) {
 	}
 
 	started := time.Now()
-	result, used, errRun := runWithAccount(request, creds, req.AuthID, ref, prompt)
+	result, used, errRun := runWithAccount(request, creds, req.AuthID, ref, buildToolInputs(ref, prompt, body))
 	if errRun != nil {
 		state.logs.add(callEntry{
 			Account:  creds.label(),
@@ -154,7 +154,7 @@ func executorExecuteStream(request []byte) ([]byte, error) {
 	// content: a client that times out waiting for its first byte gets nothing
 	// from an empty preface.
 	started := time.Now()
-	result, used, errRun := runWithAccount(request, creds, req.AuthID, ref, prompt)
+	result, used, errRun := runWithAccount(request, creds, req.AuthID, ref, buildToolInputs(ref, prompt, body))
 	if errRun != nil {
 		return errorEnvelope("upstream_error", errRun.Error(), httpStatusOf(errRun)), nil
 	}
@@ -230,7 +230,7 @@ func buildSSEFrames(id, model, text string) []pluginapi.ExecutorStreamChunk {
 // whether to retry. isAuthError means the token is dead and a different account
 // may well work; a quota error means the same. A transport failure is retried
 // once on the same account, since it says nothing about the credential.
-func runWithAccount(request []byte, creds *tinkerCredentials, authID string, ref toolRef, prompt string) (*generationResult, *tinkerCredentials, error) {
+func runWithAccount(request []byte, creds *tinkerCredentials, authID string, ref toolRef, inputs map[string]any) (*generationResult, *tinkerCredentials, error) {
 	cfg := state.settings.get()
 	maxAttempts := cfg.MaxRotate
 	if maxAttempts <= 0 {
@@ -258,7 +258,7 @@ func runWithAccount(request []byte, creds *tinkerCredentials, authID string, ref
 			continue
 		}
 
-		result, errRun := upstream.generate(hCtx, usable.AccessToken, ref.ToolID, ref.ModelID, prompt)
+		result, errRun := upstream.generate(hCtx, usable.AccessToken, ref.ToolID, ref.ModelID, inputs)
 		cancel()
 
 		if errRun == nil {

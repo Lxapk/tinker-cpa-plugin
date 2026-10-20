@@ -572,3 +572,74 @@ func TestExpiredAccessTokenIsTransient(t *testing.T) {
 		}
 	}
 }
+
+// TestImageInputsCarryResolution guards the report that a client could not ask for
+// 2K/4K: only the prompt used to be forwarded, so every image came back at the
+// tool's 1K default.
+func TestImageInputsCarryResolution(t *testing.T) {
+	gemini := resolveTool("gemini-3.1-flash-image")
+
+	// An explicit OpenAI-style size.
+	inputs := buildToolInputs(gemini, "a cat", []byte(`{"size":"2048x2048"}`))
+	if inputs["resolution"] != "2K" {
+		t.Errorf("2048x2048 应映射为 2K，得到 %v", inputs["resolution"])
+	}
+	if inputs["aspect_ratio"] != "1:1" {
+		t.Errorf("方图应映射为 1:1，得到 %v", inputs["aspect_ratio"])
+	}
+
+	// A plain "4K" token, which some clients send in size.
+	inputs = buildToolInputs(gemini, "a cat", []byte(`{"size":"4K"}`))
+	if inputs["resolution"] != "4K" {
+		t.Errorf("4K 应原样传递，得到 %v", inputs["resolution"])
+	}
+
+	// An explicit resolution field wins.
+	inputs = buildToolInputs(gemini, "a cat", []byte(`{"resolution":"4K","size":"1024x1024"}`))
+	if inputs["resolution"] != "4K" {
+		t.Errorf("显式 resolution 应优先，得到 %v", inputs["resolution"])
+	}
+
+	// Landscape sizes pick a landscape ratio.
+	inputs = buildToolInputs(gemini, "a cat", []byte(`{"size":"1920x1080"}`))
+	if inputs["aspect_ratio"] != "16:9" {
+		t.Errorf("1920x1080 应映射为 16:9，得到 %v", inputs["aspect_ratio"])
+	}
+	if inputs["resolution"] != "2K" {
+		t.Errorf("1920 长边应映射为 2K，得到 %v", inputs["resolution"])
+	}
+}
+
+// TestImageInputsRespectToolCapabilities checks that no field is sent to a tool that
+// does not declare it — the upstream rejects unknown inputs.
+func TestImageInputsRespectToolCapabilities(t *testing.T) {
+	gpt := resolveTool("gpt-image")
+	inputs := buildToolInputs(gpt, "a cat", []byte(`{"size":"2048x2048"}`))
+	if _, has := inputs["resolution"]; has {
+		t.Error("gpt_image 不接受 resolution，不应传入")
+	}
+	if inputs["quality"] != "medium" {
+		t.Errorf("2K 应映射为 medium 质量，得到 %v", inputs["quality"])
+	}
+
+	flux := resolveTool("flux-image")
+	inputs = buildToolInputs(flux, "a cat", []byte(`{"size":"2048x2048"}`))
+	if _, has := inputs["resolution"]; has {
+		t.Error("flux 不接受 resolution")
+	}
+	if _, has := inputs["quality"]; has {
+		t.Error("flux 不接受 quality")
+	}
+	if inputs["aspect_ratio"] != "1:1" {
+		t.Errorf("flux 应收到 aspect_ratio，得到 %v", inputs["aspect_ratio"])
+	}
+}
+
+// TestTextToolInputsStayMinimal: text tools take only a prompt.
+func TestTextToolInputsStayMinimal(t *testing.T) {
+	claude := resolveTool("claude-opus-4-8")
+	inputs := buildToolInputs(claude, "hello", []byte(`{"size":"4K"}`))
+	if len(inputs) != 1 || inputs["prompt"] != "hello" {
+		t.Errorf("文本工具只应收到 prompt，得到 %v", inputs)
+	}
+}

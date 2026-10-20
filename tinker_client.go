@@ -332,8 +332,8 @@ type generationResult struct {
 }
 
 // generate performs the create -> poll -> fetch-content cycle.
-func (c *tinkerClient) generate(ctx context.Context, accessToken, toolID, modelID, prompt string) (*generationResult, error) {
-	createdRaw, errCreate := c.createGeneration(ctx, accessToken, toolID, modelID, prompt)
+func (c *tinkerClient) generate(ctx context.Context, accessToken, toolID, modelID string, inputs map[string]any) (*generationResult, error) {
+	createdRaw, errCreate := c.createGeneration(ctx, accessToken, toolID, modelID, inputs)
 	if errCreate != nil {
 		return nil, errCreate
 	}
@@ -385,11 +385,19 @@ func (c *tinkerClient) generate(ctx context.Context, accessToken, toolID, modelI
 // createGeneration issues createAndRunArtifact with the flow shape Tinker's own
 // client builds: one node whose inputs are template references, plus the
 // concrete input values.
-func (c *tinkerClient) createGeneration(ctx context.Context, accessToken, toolID, modelID, prompt string) ([]byte, error) {
+func (c *tinkerClient) createGeneration(ctx context.Context, accessToken, toolID, modelID string, inputs map[string]any) ([]byte, error) {
+	// Every key is both referenced by the node's template and supplied as a
+	// concrete input. Tinker's tool schema exposes more than a prompt — image
+	// tools take aspect_ratio / resolution / output_format — and passing only the
+	// prompt silently dropped them, so a client asking for 4K got the 1K default.
+	template := make(map[string]any, len(inputs))
+	for name := range inputs {
+		template[name] = "${inputs." + name + "}"
+	}
 	node := map[string]any{
 		"id":     "node-1",
 		"type":   toolID,
-		"inputs": map[string]any{"prompt": "${inputs.prompt}"},
+		"inputs": template,
 	}
 	if modelID != "" {
 		node["model"] = modelID
@@ -400,7 +408,7 @@ func (c *tinkerClient) createGeneration(ctx context.Context, accessToken, toolID
 	}
 	input := map[string]any{
 		"flowJson": flow,
-		"inputs":   map[string]any{"prompt": prompt},
+		"inputs":   inputs,
 		// The enum is upper-case on the wire; "Private" is rejected with a
 		// variable-validation error that never mentions casing.
 		"privacy": "PRIVATE",
