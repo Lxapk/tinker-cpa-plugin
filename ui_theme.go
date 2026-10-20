@@ -180,6 +180,7 @@ code, .mono { font-family: var(--mono); font-size: .93em; }
 button {
   appearance: none; cursor: pointer; font: inherit; font-size: 13px;
   border-radius: var(--radius-md); padding: 7px 13px;
+  white-space: nowrap;
   border: 1px solid var(--border-primary);
   background: var(--bg-primary); color: var(--text-primary);
   transition: background 150ms ease, border-color 150ms ease;
@@ -228,7 +229,12 @@ input::placeholder { color: var(--text-quaternary); }
 /* ======================= table ======================= */
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border-color); }
+th, td { text-align: left; padding: 10px 10px; border-bottom: 1px solid var(--border-color); }
+/* The action column holds one short button; letting it wrap turned "停用" into a
+   vertical stack of two characters. */
+td.act, th.act { width: 1%; white-space: nowrap; text-align: right; }
+td.state, th.state { width: 1%; white-space: nowrap; }
+td.num, th.num { width: 1%; white-space: nowrap; }
 th {
   color: var(--text-tertiary); font-weight: 500; font-size: 12px;
   background: var(--bg-tertiary); white-space: nowrap;
@@ -237,10 +243,16 @@ tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover { background: var(--bg-tertiary); }
 td.num { font-variant-numeric: tabular-nums; }
 .ell { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The account cell carries the email; on a phone the ellipsis hid the domain, so
+   it wraps onto a second line instead. */
+td.who { max-width: 240px; overflow-wrap: anywhere; }
 
 .pill {
   display: inline-block; padding: 2px 9px; border-radius: var(--radius-full);
   font-size: 11px; font-weight: 600;
+  /* Without this the badge is squeezed by the table's auto layout and "启用"
+     breaks into two stacked characters. */
+  white-space: nowrap;
 }
 .pill.on { background: color-mix(in srgb, var(--success-color) 18%, transparent); color: var(--success-color); }
 .pill.off { background: color-mix(in srgb, var(--error-color) 16%, transparent); color: var(--error-color); }
@@ -275,9 +287,14 @@ td.num { font-variant-numeric: tabular-nums; }
 @media (max-width: 560px) {
   .page-header, .main { padding-left: 14px; padding-right: 14px; }
   .tabbar { padding: 0 14px; gap: 18px; }
-  .stats { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
+  /* Two columns: four auto-fit cells produced a 3 + 1 row, which read as a
+     mistake rather than a grid. */
+  .stats { grid-template-columns: repeat(2, 1fr); }
   .stat .v { font-size: 19px; }
-  .ell { max-width: 130px; }
+  td.who { max-width: 170px; font-size: 12px; }
   .box > header { flex-wrap: wrap; }
+  .box > header .note { order: 3; width: 100%; }
+  table { font-size: 12px; }
+  th, td { padding: 9px 7px; }
 }
 `

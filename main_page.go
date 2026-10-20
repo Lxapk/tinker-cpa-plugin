@@ -111,7 +111,7 @@ func renderAccountsView() string {
 	} else {
 		b.WriteString(`<div class="table-wrap"><table><thead><tr>`)
 		b.WriteString(`<th>账号</th><th>状态</th><th class="num">调用</th>`)
-		b.WriteString(`<th>最近使用</th><th>到期</th><th></th>`)
+		b.WriteString(`<th>最近使用</th><th>到期</th><th class="act"></th>`)
 		b.WriteString(`</tr></thead><tbody>`)
 		for _, record := range accounts {
 			b.WriteString(renderAccountRow(record, now))
@@ -151,12 +151,12 @@ func renderAccountRow(record accountRecord, now int64) string {
 	}
 
 	return `<tr>` +
-		`<td class="ell" title="` + html.EscapeString(name) + `">` + html.EscapeString(name) + `</td>` +
-		`<td>` + status + `</td>` +
+		`<td class="who" title="` + html.EscapeString(name) + `">` + html.EscapeString(name) + `</td>` +
+		`<td class="state">` + status + `</td>` +
 		`<td class="num">` + fmt.Sprint(record.CallCount) + `</td>` +
-		`<td class="note">` + html.EscapeString(humanTime(record.LastUsed)) + `</td>` +
-		`<td class="note">` + html.EscapeString(humanTime(record.ExpiresAt)) + `</td>` +
-		`<td>` + action + `</td>` +
+		`<td class="note num">` + html.EscapeString(humanTime(record.LastUsed)) + `</td>` +
+		`<td class="note num">` + html.EscapeString(humanTime(record.ExpiresAt)) + `</td>` +
+		`<td class="act">` + action + `</td>` +
 		`</tr>`
 }
 
