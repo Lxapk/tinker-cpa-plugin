@@ -272,9 +272,13 @@ func runWithAccount(request []byte, creds *tinkerCredentials, authID string, ref
 		var apiErr *apiError
 		if errors.As(errRun, &apiErr) {
 			hard = apiErr.isAuthError() || apiErr.isQuotaError()
-			if apiErr.isAuthError() {
-				state.accounts.markBlocked(usable.accountKey(), apiErr.Error())
-			}
+			// An auth rejection is not proof that the account is dead: Tinker's
+			// access token lives 15 minutes and CPA refreshes it on its own
+			// schedule, so a request that lands just before that refresh fails
+			// with a valid credential behind it. Marking the account blocked here
+			// is what made it look permanently dead — the flag then outlived the
+			// expired token that caused it. Only a failed refresh is evidence
+			// enough, and that path sets the flag itself.
 		}
 		state.accounts.markFailure(usable.accountKey(), errRun.Error(), hard)
 

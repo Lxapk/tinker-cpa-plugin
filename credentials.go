@@ -170,8 +170,13 @@ func normalizeCredentials(c *tinkerCredentials) *tinkerCredentials {
 	if c.UID == "" {
 		c.UID = c.AccountID
 	}
-	if c.ExpiresAt == 0 {
-		c.ExpiresAt = claimInt64(c.AccessToken, "exp")
+	// The token's own exp claim is authoritative. Trusting a stored expires_at
+	// instead let the two disagree: a credential refreshed by someone else carried
+	// a stale timestamp, CPA then believed it was long expired and refreshed
+	// again on every check — burning the single-use refresh token each time and
+	// ending with "invalid JWT refresh token" while the account was still fine.
+	if exp := claimInt64(c.AccessToken, "exp"); exp > 0 {
+		c.ExpiresAt = exp
 	}
 	if c.AddedAt == 0 {
 		c.AddedAt = time.Now().Unix()

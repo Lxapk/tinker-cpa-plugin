@@ -399,3 +399,24 @@ func TestPageDoesNotHardcodeTheme(t *testing.T) {
 		t.Errorf("<html> 不应写死主题: %s", tag)
 	}
 }
+
+// TestExpiresAtComesFromToken guards the invariant that caused accounts to die
+// quickly: a stored expires_at that disagreed with the token's own exp made CPA
+// believe the credential was long expired, so it refreshed on every check and
+// burned the single-use refresh token.
+func TestExpiresAtComesFromToken(t *testing.T) {
+	// {"exp":1792505628,"account_id":474610}
+	token := "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3OTI1MDU2MjgsImFjY291bnRfaWQiOjQ3NDYxMH0.sig"
+
+	stale := &tinkerCredentials{AccessToken: token, ExpiresAt: 100}
+	normalized := normalizeCredentials(stale)
+	if normalized.ExpiresAt != 1792505628 {
+		t.Errorf("expires_at 应取自 token 的 exp，得到 %d", normalized.ExpiresAt)
+	}
+
+	// No exp in the token: whatever was stored stays.
+	noExp := &tinkerCredentials{AccessToken: "not-a-jwt-token", ExpiresAt: 12345}
+	if got := normalizeCredentials(noExp).ExpiresAt; got != 12345 {
+		t.Errorf("无 exp 时应保留原值，得到 %d", got)
+	}
+}

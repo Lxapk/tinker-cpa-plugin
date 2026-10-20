@@ -169,6 +169,48 @@ func authLoginPoll(request []byte) ([]byte, error) {
 }
 
 
+/* ---------- helpers ---------- */
+
+// metaString reads the first non-empty string from a metadata map.
+func metaString(metadata map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := metadata[key]
+		if !ok || value == nil {
+			continue
+		}
+		if text, isText := value.(string); isText && strings.TrimSpace(text) != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+// withToken returns a usable access token, refreshing first when the credential
+// is near expiry.
+//
+// The refreshed pair is written back to the auth file before returning: the old
+// refresh token dies the moment it is used, so keeping the new one only in memory
+// would make the next call fail.
+// withToken returns the credential to use for one generation.
+//
+// CPA owns refreshing. Its auto-refresh loop re-evaluates every 5 seconds against
+// NextRefreshAfter and calls auth.refresh when it is due, and the executor is
+// handed CPA's current in-memory credential in StorageJSON. There is therefore
+// nothing to do here but hand the credential back.
+//
+// Refreshing here was actively harmful. Tinker's refresh token is single-use: the
+// server rotates it on every call, so a second refresh with the spent token
+// answers "invalid JWT refresh token". The plugin's on-demand refresh raced CPA's
+// scheduled one, lost, and then marked a perfectly good account as blocked — the
+// account appeared to die within minutes while the official app kept working
+// indefinitely.
+func withToken(_ context.Context, creds *tinkerCredentials, _ string) (*tinkerCredentials, error) {
+	if creds == nil {
+		return nil, errors.New("缺少凭据")
+	}
+	return creds, nil
+}
+
 /* ---------- auth.refresh ---------- */
 
 // authRefresh answers auth.refresh.
@@ -214,18 +256,6 @@ func authRefresh(request []byte) ([]byte, error) {
 /* ---------- helpers ---------- */
 
 // metaString reads the first non-empty string from a metadata map.
-func metaString(metadata map[string]any, keys ...string) string {
-	for _, key := range keys {
-		value, ok := metadata[key]
-		if !ok || value == nil {
-			continue
-		}
-		if text, isText := value.(string); isText && strings.TrimSpace(text) != "" {
-			return text
-		}
-	}
-	return ""
-}
 
 // withToken returns a usable access token, refreshing first when the credential
 // is near expiry.
@@ -233,27 +263,6 @@ func metaString(metadata map[string]any, keys ...string) string {
 // The refreshed pair is written back to the auth file before returning: the old
 // refresh token dies the moment it is used, so keeping the new one only in memory
 // would make the next call fail.
-func withToken(ctx context.Context, creds *tinkerCredentials, authID string) (*tinkerCredentials, error) {
-	if creds == nil {
-		return nil, errors.New("缺少凭据")
-	}
-	skew := time.Duration(state.settings.get().RefreshSkewSeconds) * time.Second
-	if !creds.expired(skew) {
-		return creds, nil
-	}
-	if creds.RefreshToken == "" {
-		return creds, nil
-	}
-	next, err := upstream.refresh(ctx, creds)
-	if err != nil {
-		state.accounts.markBlocked(creds.accountKey(), err.Error())
-		return nil, err
-	}
-	state.accounts.clearBlocked(creds.accountKey())
-	persistRefreshedCredential(authID, next)
-	return next, nil
-}
-
 // httpStatusOf pulls a status out of an error chain for the panel.
 func httpStatusOf(err error) int {
 	var apiErr *apiError
