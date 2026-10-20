@@ -336,14 +336,16 @@ var toolFieldSupport = map[string]toolFields{
 	"flux_pro_kontext": {AspectRatio: true, Format: true, Enhance: true},
 	"grok_image":       {AspectRatio: true, Format: true, Enhance: true},
 
-	// Video. Note there is no resolution field: the duration and aspect ratio are
-	// the only knobs the upstream exposes, so a client asking for 4K video is
-	// honoured only in the sense that the request is not rejected.
+	// Video. The input schema lists no resolution field for any of these tools —
+	// duration, aspect ratio and (on some) audio are the whole surface. The app's
+	// resolution picker is a client-side form, not part of what the API accepts, so
+	// sending one would be an unknown input.
 	"minimax_video":        {AspectRatio: true, Duration: true, Enhance: true},
 	"veo_text_to_video":    {AspectRatio: true, Duration: true, Audio: true, Enhance: true},
 	"kling_image_to_video": {AspectRatio: true, Duration: true, Audio: true},
 	"seedance_video":       {AspectRatio: true, Duration: true, Audio: true, Enhance: true},
 }
+
 
 // videoDurations lists the durations each video tool accepts, in seconds.
 //
@@ -352,7 +354,7 @@ var toolFieldSupport = map[string]toolFields{
 // passed through.
 var videoDurations = map[string][]int{
 	"minimax_video":        {5, 6},
-	"veo_text_to_video":    {4, 6},
+	"veo_text_to_video":    {4, 6, 8},
 	"kling_image_to_video": {3, 4, 5},
 	"seedance_video":       {4, 5, 6},
 }
@@ -663,3 +665,4 @@ func ratioIsLandscape(ratio string) bool {
 	}
 	return w > h
 }
+
