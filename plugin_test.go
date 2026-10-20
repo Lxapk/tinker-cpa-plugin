@@ -173,21 +173,32 @@ func TestJWTClaimsReadNumericAccountID(t *testing.T) {
 
 func TestBuildSSEFramesShape(t *testing.T) {
 	frames := buildSSEFrames("chatcmpl-x", "gpt-5.2", strings.Repeat("a", 200))
-	if len(frames) < 3 {
+	if len(frames) < 2 {
 		t.Fatalf("帧数过少: %d", len(frames))
 	}
+	// Each payload must be a bare JSON object: CPA adds the "data: " prefix and
+	// the terminal [DONE] itself. Pre-framing here produced "data: data: {...}".
 	for _, frame := range frames {
-		payload := string(frame.Payload)
-		if !strings.HasPrefix(payload, "data: ") {
-			t.Errorf("帧缺少 data: 前缀: %q", payload)
+		payload := strings.TrimSpace(string(frame.Payload))
+		if strings.HasPrefix(payload, "data:") {
+			t.Errorf("chunk 不应自带 SSE 前缀: %q", payload)
 		}
-		if !strings.HasSuffix(payload, "\n\n") {
-			t.Errorf("帧缺少结尾空行: %q", payload)
+		if !strings.HasPrefix(payload, "{") || !strings.HasSuffix(payload, "}") {
+			t.Errorf("chunk 应为裸 JSON 对象: %q", payload)
+		}
+		var body struct {
+			Object  string `json:"object"`
+			Choices []any  `json:"choices"`
+		}
+		if err := json.Unmarshal(frame.Payload, &body); err != nil {
+			t.Errorf("chunk 不是合法 JSON: %v (%s)", err, payload)
+		}
+		if body.Object != "chat.completion.chunk" {
+			t.Errorf("object = %q", body.Object)
 		}
 	}
-	last := string(frames[len(frames)-1].Payload)
-	if !strings.Contains(last, "[DONE]") {
-		t.Errorf("最后一帧应为 [DONE], 得到 %q", last)
+	if strings.Contains(string(frames[len(frames)-1].Payload), "[DONE]") {
+		t.Error("[DONE] 应由 CPA 追加，插件不应发送")
 	}
 }
 

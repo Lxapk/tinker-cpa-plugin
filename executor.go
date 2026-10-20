@@ -197,13 +197,16 @@ type streamChunkEnvelope struct {
 func buildSSEFrames(id, model, text string) []pluginapi.ExecutorStreamChunk {
 	frames := make([]pluginapi.ExecutorStreamChunk, 0, 8)
 	appendFrame := func(payload []byte) {
-		frame := make([]byte, 0, len(payload)+8)
-		frame = append(frame, []byte("data: ")...)
-		frame = append(frame, payload...)
-		frame = append(frame, '\n', '\n')
-		frames = append(frames, pluginapi.ExecutorStreamChunk{Payload: frame})
+		frames = append(frames, pluginapi.ExecutorStreamChunk{Payload: payload})
 	}
 
+	// Bare JSON objects, not SSE frames.
+	//
+	// CPA wraps every chunk in "data: ...\n\n" itself and appends the terminal
+	// "data: [DONE]" (executorStreamDonePayload). Sending pre-framed text here put
+	// "data: data: {...}" on the wire, and a client parsing the stream as JSON
+	// failed at the second colon — the reported
+	// "Expected EOF after parsing, but had : instead".
 	appendFrame(chunkBody(id, model, "", ""))
 	const step = 120
 	runes := []rune(text)
@@ -215,7 +218,6 @@ func buildSSEFrames(id, model, text string) []pluginapi.ExecutorStreamChunk {
 		appendFrame(chunkBody(id, model, string(runes[idx:end]), ""))
 	}
 	appendFrame(chunkBody(id, model, "", "stop"))
-	frames = append(frames, pluginapi.ExecutorStreamChunk{Payload: []byte("data: [DONE]\n\n")})
 	return frames
 }
 
