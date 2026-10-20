@@ -1,0 +1,112 @@
+name: build-cpa-plugin
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号"
+        required: false
+        default: "0.1.0"
+
+permissions:
+  contents: write
+
+env:
+  PLUGIN_ID: tinker
+  PLUGIN_NAME: "Tinker"
+
+jobs:
+  build:
+    name: build linux/${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Install C compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc libc6-dev
+
+      # The unit tests run without cgo: cabi.go is excluded, so host_rpc.go's
+      # stub is what the tests see.
+      - name: Test
+        run: CGO_ENABLED=0 go test ./... -count=1
+
+      - name: Build .so (c-shared)
+        env:
+          CGO_ENABLED: "1"
+          CC: gcc
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+          go build -buildmode=c-shared -trimpath -o dist/tinker.so .
+          readelf -h dist/tinker.so | grep Machine
+          nm -D --defined-only dist/tinker.so | grep cliproxy_plugin_init
+          go build -o dist/smoke ./smoke
+          ./dist/smoke dist/tinker.so
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tinker-linux-${{ matrix.arch }}
+          path: dist/tinker.so
+
+  package:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          V="${GITHUB_REF#refs/tags/}"; V="${V#v}"
+          if [ -z "$V" ]; then V="${{ github.event.inputs.version }}"; fi
+          echo "version=${V}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      # The store rejects anything that is not a single, root-level "<id>.so"
+      # inside the zip, so the layout is built explicitly rather than by zipping
+      # a directory.
+      - name: Package
+        run: |
+          set -eu
+          mkdir -p release
+          VERSION="${{ steps.ver.outputs.version }}"
+          for arch in amd64 arm64; do
+            src="dist/tinker-linux-${arch}/tinker.so"
+            [ -f "$src" ] || { echo "missing $src" >&2; exit 1; }
+            work="$(mktemp -d)"
+            cp "$src" "$work/tinker.so"
+            ( cd "$work" && zip -q -X "$GITHUB_WORKSPACE/release/tinker_${VERSION}_linux_${arch}.zip" tinker.so )
+            rm -rf "$work"
+          done
+          ( cd release && sha256sum *.zip > checksums.txt )
+          cat release/checksums.txt
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.zip
+            release/checksums.txt
+          generate_release_notes: true

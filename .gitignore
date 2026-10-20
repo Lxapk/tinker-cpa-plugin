@@ -1,0 +1,16 @@
+# 构建产物
+/dist/
+/dist-smoke-check/
+/smoke/smoke
+*.so
+*.h
+
+# Go
+/go.work
+/go.work.sum
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+.DS_Store
