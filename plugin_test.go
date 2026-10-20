@@ -323,25 +323,17 @@ func TestParseCredentialInputAcceptsWholeAuthFile(t *testing.T) {
 	}
 }
 
-// TestTokenFormURLKeepsOnlyOrigin guards against the URL-splicing bug that
-// produced "http://127.0.0.1:8317/v8/management/oauth/callback/v0/resource/...".
-//
-// BaseURL is the full callback URL, and the management path prefix varies between
-// CPA builds, so only scheme+host may be reused.
-func TestTokenFormURLKeepsOnlyOrigin(t *testing.T) {
-	// Every input yields the same relative path. An absolute URL here would embed
-	// the host's own 127.0.0.1 and break access from a remote browser.
-	want := "/v0/resource/plugins/tinker/login"
-	cases := []string{
-		"http://127.0.0.1:8317/v0/management/oauth-callback",
-		"http://127.0.0.1:8317/v8/management/oauth/callback",
-		"https://cpa.example.com/v0/management/oauth-callback",
-		"",
-		"garbage",
+// TestLoginPageURLIsRelative guards the fix for a login URL that embedded the
+// host's own 127.0.0.1, which a remote browser then opened against itself.
+func TestLoginPageURLIsRelative(t *testing.T) {
+	got := loginPageURL("abc123")
+	if !strings.HasPrefix(got, "/v0/resource/plugins/tinker/login") {
+		t.Errorf("loginPageURL = %q, want a relative path", got)
 	}
-	for _, in := range cases {
-		if got := tokenFormURL(in); got != want {
-			t.Errorf("tokenFormURL(%q) = %q, want %q", in, got, want)
-		}
+	if strings.Contains(got, "127.0.0.1") || strings.Contains(got, "://") {
+		t.Errorf("loginPageURL must not carry a host: %q", got)
+	}
+	if !strings.Contains(got, "state=abc123") {
+		t.Errorf("loginPageURL lost the state: %q", got)
 	}
 }

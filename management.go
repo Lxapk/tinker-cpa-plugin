@@ -40,6 +40,9 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodGet, Path: "/tinker/accounts", Description: "Tinker 账号列表（含启用状态）。"},
 			{Method: http.MethodPost, Path: "/tinker/account/toggle", Description: "启用或禁用某个账号。"},
 			{Method: http.MethodPost, Path: "/tinker/account/remove", Description: "移除某个账号的本地记录。"},
+			{Method: http.MethodPost, Path: "/tinker/login/send", Description: "登录表单：发送邮箱验证码。"},
+			{Method: http.MethodPost, Path: "/tinker/login/verify", Description: "登录表单：校验验证码并写入账号。"},
+			{Method: http.MethodGet, Path: "/tinker/login/status", Description: "登录表单：查询登录结果。"},
 			{Method: http.MethodGet, Path: "/tinker/status", Description: "插件运行状态与账号汇总。"},
 			{Method: http.MethodGet, Path: "/tinker/models", Description: "Tinker 工具目录。"},
 			{Method: http.MethodGet, Path: "/tinker/calls", Description: "最近的调用记录。"},
@@ -102,6 +105,18 @@ type managementResponse struct {
 // StatusCode/Headers/Body carried in the envelope's result.
 func wrapManagement(resp managementResponse) ([]byte, error) {
 	return okEnvelope(resp)
+}
+
+// rawManagementResponse wraps an already-encoded JSON body.
+func rawManagementResponse(body []byte, err error) ([]byte, error) {
+	if err != nil {
+		return nil, err
+	}
+	return wrapManagement(managementResponse{
+		StatusCode: http.StatusOK,
+		Headers:    map[string][]string{"Content-Type": {"application/json; charset=utf-8"}},
+		Body:       body,
+	})
 }
 
 func jsonManagementResponse(v any) ([]byte, error) {
@@ -169,6 +184,15 @@ func handleManagement(request []byte) ([]byte, error) {
 
 	case path == "/tinker/account/remove" && method == http.MethodPost:
 		return removeAccount(req)
+
+	case path == "/tinker/login/send" && method == http.MethodPost:
+		return rawManagementResponse(handleLoginSendCode(req.Body))
+
+	case path == "/tinker/login/verify" && method == http.MethodPost:
+		return rawManagementResponse(handleLoginVerify(req.Body))
+
+	case path == "/tinker/login/status" && method == http.MethodGet:
+		return rawManagementResponse(handleLoginStatus(req.Query.Get("state")))
 	}
 
 	return errorManagementResponse(http.StatusNotFound, "未知管理接口: "+path)
@@ -621,13 +645,11 @@ async function loadCalls() {
 </html>`)
 }
 
-// loginFormHTML is the page the OAuth dialog opens when it starts a Tinker
-// login.
+// loginFormHTML is the page the authorisation dialog opens for Tinker.
 //
-// Tinker authenticates with an emailed one-time code, so the address is required
-// up front — something the host's generic dialog cannot ask for. This page
-// collects it and then continues with the host's own callback, so the flow ends
-// in CPA's normal "waiting for authorisation" state rather than a dead end.
+// It is the whole login: the address, the emailed code and the exchange all
+// happen here. The page runs on the CPA origin, so it reuses the management key
+// the panel already stored and the operator never retypes it.
 func loginFormHTML() string {
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="zh-CN">
@@ -637,80 +659,150 @@ func loginFormHTML() string {
 <title>Tinker 登录</title>
 <style>
   :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
   body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
          background:#f6f6f7; color:#1d1d1f; padding:22px; }
   h1 { font-size:19px; margin:0 0 6px; }
-  p.sub { color:#6e6e73; font-size:13px; margin:0 0 18px; line-height:1.5; }
+  p.sub { color:#6e6e73; font-size:13px; margin:0 0 18px; line-height:1.55; }
   label { display:block; font-size:13px; color:#6e6e73; margin:14px 0 6px; }
-  input { width:100%%; box-sizing:border-box; border:1px solid #d2d2d7; border-radius:10px;
-          padding:11px 12px; font-size:15px; background:#fff; color:inherit; }
-  button { width:100%%; margin-top:16px; border:0; border-radius:10px; padding:12px;
-           font-size:15px; font-weight:600; background:#1d1d1f; color:#fff; cursor:pointer; }
-  button:disabled { opacity:.5; }
-  .msg { margin-top:14px; font-size:13px; line-height:1.5; }
-  .msg.ok { color:#1a7f37; }
-  .msg.bad { color:#c62828; }
-  ol { padding-left:20px; color:#6e6e73; font-size:13px; line-height:1.7; }
+  input { width:100%%; border:1px solid #d2d2d7; border-radius:10px; padding:11px 12px;
+          font-size:16px; background:#fff; color:inherit; }
+  .row { display:flex; gap:8px; }
+  .row input { flex:1; min-width:0; }
+  .row button { flex:0 0 auto; white-space:nowrap; }
+  button { border:0; border-radius:10px; padding:11px 14px; font-size:15px; font-weight:600;
+           background:#1d1d1f; color:#fff; cursor:pointer; }
+  button.primary { width:100%%; margin-top:18px; }
+  button:disabled { opacity:.5; cursor:default; }
+  button.ghost { background:transparent; color:#1d1d1f; border:1px solid #d2d2d7; font-weight:500; }
+  .msg { margin-top:14px; font-size:13px; line-height:1.55; padding:10px 12px; border-radius:10px; display:none; }
+  .msg.show { display:block; }
+  .msg.ok { background:#e3f6e5; color:#1a7f37; }
+  .msg.bad { background:#fdeaea; color:#c62828; }
+  .msg.wait { background:#eef2f7; color:#3a4a5c; }
+  .done { display:none; text-align:center; padding:26px 0; }
+  .done.show { display:block; }
+  .done .big { font-size:42px; line-height:1; }
+  .done h2 { font-size:17px; margin:12px 0 6px; }
   @media (prefers-color-scheme: dark) {
     body { background:#121212; color:#f2f2f2; }
     input { background:#1c1c1e; border-color:#3a3a3c; }
     button { background:#f2f2f2; color:#121212; }
+    button.ghost { background:transparent; color:#f2f2f2; }
+    .msg.ok { background:#16301b; color:#7ee787; }
+    .msg.bad { background:#3a1a1a; color:#ff9f9f; }
+    .msg.wait { background:#1c2530; color:#9fb6cc; }
   }
 </style>
 </head>
 <body>
-<h1>登录 Tinker</h1>
-<p class="sub">Tinker 使用邮箱验证码登录。填写邮箱后点「发送验证码」，收到邮件后回到 CPA 的登录窗口填入 6 位验证码。</p>
+<div id="form">
+  <h1>登录 Tinker</h1>
+  <p class="sub">Tinker 使用邮箱验证码登录。填写邮箱并获取验证码，在本页填入即可完成授权。</p>
 
-<label for="email">邮箱</label>
-<input id="email" type="email" placeholder="you@example.com" autocomplete="username" />
-<button id="send" onclick="sendCode()">发送验证码</button>
-<div class="msg" id="msg"></div>
+  <label for="email">邮箱</label>
+  <input id="email" type="email" placeholder="you@example.com" autocomplete="username" />
 
-<ol id="steps" style="display:none">
-  <li>验证码已发送，请查收邮件。</li>
-  <li>回到 CPA 的登录窗口，在输入框填入 6 位验证码。</li>
-  <li>点确认即可完成登录。</li>
-</ol>
+  <label for="code">验证码</label>
+  <div class="row">
+    <input id="code" type="text" inputmode="numeric" maxlength="8" placeholder="邮件中的 6 位数字" autocomplete="one-time-code" />
+    <button class="ghost" id="send" onclick="sendCode()">获取验证码</button>
+  </div>
+
+  <button class="primary" id="submit" onclick="submitCode()">完成登录</button>
+  <div class="msg" id="msg"></div>
+</div>
+
+<div class="done" id="done">
+  <div class="big">✓</div>
+  <h2>登录成功</h2>
+  <p class="sub" id="doneMsg">账号已写入 CPA，可以关闭本页。</p>
+</div>
 
 <script>
+// The page is served from the CPA origin, so it reuses the key the panel saved.
 const MGMT = "/v0/management";
+const PANEL_KEY = "cpa-management-key";
+const OUR_KEY = "tinker.mgmtKey";
+const state = new URLSearchParams(location.search).get("state") || "";
+
 function key() {
-  try { return (localStorage.getItem("tinker.mgmtKey") || "").trim(); } catch (e) { return ""; }
+  for (const name of [PANEL_KEY, OUR_KEY]) {
+    try {
+      const v = (localStorage.getItem(name) || "").trim();
+      if (v) return v;
+    } catch (e) {}
+  }
+  return "";
 }
 function show(text, cls) {
   const el = document.getElementById("msg");
   el.textContent = text;
-  el.className = "msg" + (cls ? " " + cls : "");
+  el.className = "msg show " + (cls || "wait");
+}
+function clearMsg() {
+  const el = document.getElementById("msg");
+  el.className = "msg";
+}
+async function api(path, body) {
+  const k = key();
+  if (!k) throw new Error("未找到 CPA 管理密钥，请先在 CPA 面板登录");
+  const resp = await fetch(MGMT + path, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + k,
+      "X-Management-Key": k
+    },
+    body: JSON.stringify(body)
+  });
+  const data = await resp.json().catch(() => null);
+  if (!resp.ok) {
+    throw new Error((data && (data.message || data.error)) || ("HTTP " + resp.status));
+  }
+  return data || {};
 }
 async function sendCode() {
   const email = (document.getElementById("email").value || "").trim();
-  if (!email || email.indexOf("@") < 0) { show("请输入有效邮箱", "bad"); return; }
-
-  // The management API needs the key; it is the same one the panel page uses.
-  let mgmtKey = key();
-  if (!mgmtKey) {
-    mgmtKey = (prompt("请输入 CPA 管理密钥（config.yaml 的 remote-management.secret-key）") || "").trim();
-    if (!mgmtKey) { show("缺少管理密钥，无法发送验证码", "bad"); return; }
-    try { localStorage.setItem("tinker.mgmtKey", mgmtKey); } catch (e) {}
-  }
-
+  if (!email || email.indexOf("@") < 0) { show("请填写有效邮箱", "bad"); return; }
   const btn = document.getElementById("send");
   btn.disabled = true;
-  show("正在发送…");
+  show("正在发送验证码…", "wait");
   try {
-    const resp = await fetch(MGMT + "/tinker-auth-url?email=" + encodeURIComponent(email), {
-      headers: { "Authorization": "Bearer " + mgmtKey, "X-Management-Key": mgmtKey }
-    });
-    const body = await resp.json().catch(() => null);
-    if (!resp.ok) throw new Error((body && body.error) || ("HTTP " + resp.status));
-    show("验证码已发送到 " + email + "。请回到 CPA 登录窗口填入验证码。", "ok");
-    document.getElementById("steps").style.display = "block";
+    const data = await api("/tinker/login/send", { state: state, email: email });
+    show(data.message || "验证码已发送，请查收邮件", "ok");
+    document.getElementById("code").focus();
   } catch (e) {
     show("发送失败：" + e.message, "bad");
   } finally {
     btn.disabled = false;
   }
+}
+async function submitCode() {
+  const email = (document.getElementById("email").value || "").trim();
+  const code = (document.getElementById("code").value || "").trim();
+  if (!email || email.indexOf("@") < 0) { show("请填写有效邮箱", "bad"); return; }
+  if (!code) { show("请填写邮件中的验证码", "bad"); return; }
+  const btn = document.getElementById("submit");
+  btn.disabled = true;
+  show("正在校验…", "wait");
+  try {
+    const data = await api("/tinker/login/verify", { state: state, email: email, code: code });
+    if (data.ok) {
+      document.getElementById("form").style.display = "none";
+      document.getElementById("done").classList.add("show");
+      document.getElementById("doneMsg").textContent = data.message || "账号已写入 CPA。";
+    } else {
+      show(data.message || "验证失败", "bad");
+      btn.disabled = false;
+    }
+  } catch (e) {
+    show("验证失败：" + e.message, "bad");
+    btn.disabled = false;
+  }
+}
+if (!state) {
+  show("缺少 state，请从 CPA 的授权窗口重新打开本页", "bad");
 }
 </script>
 </body>
