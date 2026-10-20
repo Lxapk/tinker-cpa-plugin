@@ -240,8 +240,8 @@ func accountsPayload() map[string]any {
 			"auth_id":        record.AuthIndex,
 			"auth_index":     record.AuthIndex,
 			"disabled":       record.Disabled,
-			"blocked":        record.Blocked,
-			"blocked_reason": record.BlockedWhy,
+			"blocked":        record.AuthRejected,
+			"blocked_reason": record.AuthReason,
 			"failures":       record.Failures,
 			"last_error":     record.LastError,
 			"last_used":      formatUnix(record.LastUsed),
@@ -249,7 +249,7 @@ func accountsPayload() map[string]any {
 			"calls":          record.CallCount,
 			"cooldown_until": formatUnixMilli(record.CooldownUntil),
 		}
-		if !record.Disabled && !record.Blocked {
+		if !record.Disabled && !record.AuthRejected {
 			enabled++
 		}
 		if record.CooldownUntil > now {

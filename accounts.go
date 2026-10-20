@@ -32,10 +32,14 @@ type accountRecord struct {
 	// Disabled is the operator's choice, mirrored into the CPA auth file's
 	// top-level "disabled" key so the host stops routing to it.
 	Disabled bool `json:"disabled"`
-	// Blocked marks a credential the upstream rejected (expired token, revoked
-	// access). It is not the operator's doing, so it is reported separately.
-	Blocked    bool   `json:"blocked"`
-	BlockedWhy string `json:"blocked_reason,omitempty"`
+	// AuthRejected records that the server refused the credential outright
+	// (invalid or revoked token). It is not a permanent verdict: it is set only
+	// when the server says so, and it clears as soon as a refresh or a login
+	// succeeds. The panel reports it, but the pool decides usability by the
+	// cooldown alone — a stored "dead" flag outlived the cause and left healthy
+	// accounts looking broken.
+	AuthRejected bool   `json:"auth_rejected,omitempty"`
+	AuthReason   string `json:"auth_reason,omitempty"`
 	// ConsecutiveFailures feeds the park threshold.
 	Failures  int   `json:"failures"`
 	LastError string `json:"last_error,omitempty"`
@@ -158,6 +162,10 @@ func (s *accountStore) markUsed(key string) {
 		record.Failures = 0
 		record.LastError = ""
 		record.CooldownUntil = 0
+		// A successful call proves the credential works, so the advisory badge
+		// must go with it.
+		record.AuthRejected = false
+		record.AuthReason = ""
 		record.CallCount++
 		record.SuccessCount++
 	}
@@ -166,8 +174,32 @@ func (s *accountStore) markUsed(key string) {
 }
 
 // markFailure records a failed call and applies the configured cooldown.
-func (s *accountStore) markFailure(key, reason string, hard bool) {
+// failureKind classifies a failed call so the right cooldown applies.
+//
+// Ported from the reference plugin's classifyUpstream: an auth rejection and a
+// quota exhaustion are hard problems, a throttle is short-lived, and everything
+// else is transient. The distinction matters because the cooldowns differ by
+// three orders of magnitude — treating a timeout like an auth rejection parked a
+// healthy account for twelve hours.
+type failureKind int
+
+const (
+	failureTransient failureKind = iota
+	failureAuth
+	failureRate
+	failureQuota
+)
+
+// markFailure records a failed call and applies the cooldown for its kind.
+//
+// Transient failures only park the account briefly, and only beyond a threshold;
+// hard failures apply the configured long cooldown. This mirrors the reference
+// implementation, where a single soft failure costs seconds and a sustained
+// streak is what actually takes an account out.
+func (s *accountStore) markFailure(key, reason string, kind failureKind) {
 	cfg := state.settings.get()
+	now := time.Now().UnixMilli()
+
 	s.mu.Lock()
 	record, ok := s.items[key]
 	if !ok {
@@ -178,32 +210,52 @@ func (s *accountStore) markFailure(key, reason string, hard bool) {
 	record.CallCount++
 	record.FailureCount++
 	record.LastError = reason
-	if hard {
-		record.CooldownUntil = time.Now().UnixMilli() + cfg.CooldownMillis
-	} else {
-		record.CooldownUntil = time.Now().UnixMilli() + cfg.SoftCooldownMillis
+
+	switch kind {
+	case failureAuth:
+		// The server refused the credential. Cool it down for the long window and
+		// flag it for the panel, but a later refresh or login clears both.
+		record.CooldownUntil = now + cfg.CooldownMillis
+		record.AuthRejected = true
+		record.AuthReason = reason
+	case failureQuota:
+		record.CooldownUntil = now + cfg.CooldownMillis
+	case failureRate:
+		record.CooldownUntil = now + cfg.SoftCooldownMillis
+	default:
+		// Transient: park only after a streak, and briefly.
+		if record.Failures >= cfg.ErrorThreshold {
+			record.CooldownUntil = now + cfg.SoftCooldownMillis*10
+			record.Failures = 0
+		} else {
+			record.CooldownUntil = now + cfg.SoftCooldownMillis
+		}
 	}
 	s.mu.Unlock()
 	s.save(state.settings.dataDir())
 }
 
-// markBlocked flags a credential the upstream rejected outright.
-func (s *accountStore) markBlocked(key, reason string) {
+// markAuthRejected records an outright refusal by the server.
+//
+// This is advisory only: it drives the panel's badge and is cleared the moment the
+// credential works again. Usability is decided by the cooldown, never by this flag
+// alone.
+func (s *accountStore) markAuthRejected(key, reason string) {
 	s.mu.Lock()
 	if record, ok := s.items[key]; ok {
-		record.Blocked = true
-		record.BlockedWhy = reason
+		record.AuthRejected = true
+		record.AuthReason = reason
 	}
 	s.mu.Unlock()
 	s.save(state.settings.dataDir())
 }
 
-// clearBlocked lifts a block once a refresh succeeds.
-func (s *accountStore) clearBlocked(key string) {
+// clearAuthRejected lifts the advisory flag once the credential works again.
+func (s *accountStore) clearAuthRejected(key string) {
 	s.mu.Lock()
 	if record, ok := s.items[key]; ok {
-		record.Blocked = false
-		record.BlockedWhy = ""
+		record.AuthRejected = false
+		record.AuthReason = ""
 		record.Failures = 0
 		record.CooldownUntil = 0
 	}
@@ -221,8 +273,8 @@ func (s *accountStore) setDisabled(key string, disabled bool) {
 	}
 	record.Disabled = disabled
 	if disabled {
-		record.Blocked = false
-		record.BlockedWhy = ""
+		record.AuthRejected = false
+		record.AuthReason = ""
 	}
 	s.mu.Unlock()
 	s.save(state.settings.dataDir())
@@ -259,6 +311,16 @@ func (s *accountStore) lookup(keys ...string) *accountRecord {
 }
 
 // usable reports whether a credential may be used right now.
+// usable reports whether a credential may serve a request right now.
+//
+// Only two things decide this: the operator's disable switch, and whether the
+// cooldown has passed. The AuthRejected flag is deliberately not consulted — it is
+// advisory, for the panel's badge. Letting it gate usability is what made a
+// healthy account unreachable after one bad refresh, because the flag outlived
+// the condition that set it.
+//
+// This mirrors the reference plugin, whose accountUsable() is a pure function of
+// disabled / expired / cooling state.
 func (s *accountStore) usable(key string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -266,7 +328,7 @@ func (s *accountStore) usable(key string) bool {
 	if !ok {
 		return true
 	}
-	if record.Disabled || record.Blocked {
+	if record.Disabled {
 		return false
 	}
 	return record.CooldownUntil <= time.Now().UnixMilli()

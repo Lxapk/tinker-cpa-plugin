@@ -245,14 +245,14 @@ func authRefresh(request []byte) ([]byte, error) {
 		// clears it.
 		var apiErr *apiError
 		if errors.As(errRefresh, &apiErr) && apiErr.isAuthError() {
-			state.accounts.markBlocked(creds.accountKey(), apiErr.Error())
+			state.accounts.markAuthRejected(creds.accountKey(), apiErr.Error())
 			return nil, fmt.Errorf("刷新失败，请重新登录: %w", errRefresh)
 		}
 		return nil, fmt.Errorf("刷新暂时失败（网络或上游异常，稍后会自动重试）: %w", errRefresh)
 	}
 
 	key := creds.accountKey()
-	state.accounts.clearBlocked(key)
+	state.accounts.clearAuthRejected(key)
 	state.accounts.observe(next, req.AuthID)
 	// The host persists what this call returns, but writing through keeps the
 	// file correct even when the host's own save path is unavailable.

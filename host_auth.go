@@ -496,9 +496,9 @@ func liveAccounts() []accountRecord {
 			// Trust the flag as stored. markBlocked is only set when the server
 			// rejected the credential outright, so a stale one cannot linger from a
 			// transient failure any more.
-			if cached.Blocked {
-				record.Blocked = true
-				record.BlockedWhy = cached.BlockedWhy
+			if cached.AuthRejected {
+				record.AuthRejected = true
+				record.AuthReason = cached.AuthReason
 			}
 		}
 		if creds != nil && creds.ExpiresAt > 0 {

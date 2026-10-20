@@ -443,15 +443,15 @@ func TestFreshLoginClearsBlocked(t *testing.T) {
 
 	// An earlier failure parked the account.
 	state.accounts.observe(creds, "")
-	state.accounts.markBlocked(key, "invalid JWT refresh token")
-	if record := state.accounts.lookup(key); record == nil || !record.Blocked {
+	state.accounts.markAuthRejected(key, "invalid JWT refresh token")
+	if record := state.accounts.lookup(key); record == nil || !record.AuthRejected {
 		t.Fatal("前置条件失败：账号应已被标记")
 	}
 
 	// Logging in again must clear it.
-	state.accounts.clearBlocked(key)
+	state.accounts.clearAuthRejected(key)
 	state.accounts.observe(creds, "")
-	if record := state.accounts.lookup(key); record != nil && record.Blocked {
+	if record := state.accounts.lookup(key); record != nil && record.AuthRejected {
 		t.Error("重新登录后 blocked 应被清除")
 	}
 }
@@ -466,13 +466,13 @@ func TestTransientRefreshFailureDoesNotBlock(t *testing.T) {
 	state.accounts.observe(creds, "")
 
 	// A plain error (no apiError) is what a timeout or transport failure looks
-	// like; the refresh handler must not call markBlocked for it.
+	// like; the refresh handler must not call markAuthRejected for it.
 	var errRefresh error = errStub("dial tcp: timeout")
 	var apiErr *apiError
 	if errors.As(errRefresh, &apiErr) {
 		t.Fatal("普通错误不应被识别为 apiError")
 	}
-	if record := state.accounts.lookup(creds.accountKey()); record != nil && record.Blocked {
+	if record := state.accounts.lookup(creds.accountKey()); record != nil && record.AuthRejected {
 		t.Error("瞬时失败不应标记 blocked")
 	}
 }
@@ -480,3 +480,96 @@ func TestTransientRefreshFailureDoesNotBlock(t *testing.T) {
 type errStub string
 
 func (e errStub) Error() string { return string(e) }
+
+// TestAuthRejectedDoesNotBlockUsability is the invariant the reference plugin
+// taught: the auth-rejected flag is advisory (the panel badge), never a gate.
+//
+// Gating usability on it was the root of "刚登录就显示需重新登录" — the flag
+// outlived the condition that set it, so a healthy credential stayed unreachable
+// until someone deleted and re-added the account.
+func TestAuthRejectedDoesNotBlockUsability(t *testing.T) {
+	state.accounts = newAccountStore()
+	state.settings.setDataDir("")
+
+	creds := &tinkerCredentials{Email: "user@example.com", UID: "42"}
+	key := creds.accountKey()
+	state.accounts.observe(creds, "")
+	state.accounts.markAuthRejected(key, "invalid JWT refresh token")
+
+	if record := state.accounts.lookup(key); record == nil || !record.AuthRejected {
+		t.Fatal("前置条件失败：应记录 auth 被拒")
+	}
+	// markAuthRejected only sets the badge; it must not take the account out of
+	// rotation on its own — the cooldown is what does that.
+	if !state.accounts.usable(key) {
+		t.Error("仅标记 AuthRejected 不应让账号不可用")
+	}
+
+	// A hard failure does cool it down, and the account returns once that passes.
+	state.accounts.markFailure(key, "invalid JWT refresh token", failureAuth)
+	if state.accounts.usable(key) {
+		t.Error("鉴权失败应进入冷却")
+	}
+	state.accounts.mu.Lock()
+	state.accounts.items[key].CooldownUntil = 0
+	state.accounts.mu.Unlock()
+	if !state.accounts.usable(key) {
+		t.Error("冷却结束后应恢复可用，AuthRejected 不应继续阻止")
+	}
+
+	// A success clears the badge too.
+	state.accounts.markUsed(key)
+	if record := state.accounts.lookup(key); record != nil && record.AuthRejected {
+		t.Error("成功调用后应清除 AuthRejected")
+	}
+}
+
+// TestTransientFailureUsesSoftCooldown ports the reference plugin's failure
+// classification: a blip must not park an account for the hard window.
+func TestTransientFailureUsesSoftCooldown(t *testing.T) {
+	state.accounts = newAccountStore()
+	state.settings.setDataDir("")
+	cfg := state.settings.get()
+
+	creds := &tinkerCredentials{Email: "user@example.com", UID: "7"}
+	key := creds.accountKey()
+	state.accounts.observe(creds, "")
+
+	before := timeNowNano() / 1e6
+	state.accounts.markFailure(key, "dial tcp: timeout", failureTransient)
+	record := state.accounts.lookup(key)
+	if record == nil {
+		t.Fatal("记录未创建")
+	}
+	cooldown := record.CooldownUntil - int64(before)
+	if cooldown > cfg.SoftCooldownMillis*11 {
+		t.Errorf("瞬时失败用了硬冷却: %d ms（soft=%d）", cooldown, cfg.SoftCooldownMillis)
+	}
+	if record.AuthRejected {
+		t.Error("瞬时失败不应标记 AuthRejected")
+	}
+}
+
+// TestExpiredAccessTokenIsTransient guards the distinction that matters most for
+// this provider: Tinker's access token lives 15 minutes and CPA refreshes it, so
+// "expired" is a routine gap, not a dead account. Only a rejected refresh token
+// proves the credential is gone.
+func TestExpiredAccessTokenIsTransient(t *testing.T) {
+	cases := []struct {
+		message string
+		status  int
+		want    failureKind
+	}{
+		{"expired JWT access token", 401, failureTransient},
+		{"Authentication required", 401, failureAuth},
+		{"invalid JWT refresh token", 401, failureAuth},
+		{"Your generation limit was reached", 400, failureQuota},
+		{"rate limit exceeded", 429, failureRate},
+	}
+	for _, c := range cases {
+		err := &apiError{Status: c.status, Message: c.message}
+		if got := classifyFailure(err); got != c.want {
+			t.Errorf("classifyFailure(%q) = %d, 期望 %d", c.message, got, c.want)
+		}
+	}
+}

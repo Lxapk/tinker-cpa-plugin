@@ -144,7 +144,7 @@ func relayableCandidates(candidates []pluginapi.SchedulerAuthCandidate) []plugin
 		}
 		key := candidateKey(candidate)
 		if record := state.accounts.lookup(key, candidate.ID); record != nil {
-			if record.Disabled || record.Blocked {
+			if record.Disabled {
 				continue
 			}
 			if record.CooldownUntil > nowUnixMilli() {
@@ -232,7 +232,7 @@ func routingStatusJSON() map[string]any {
 	enabled, cooling := 0, 0
 	now := nowUnixMilli()
 	for _, record := range accounts {
-		if record.Disabled || record.Blocked {
+		if record.Disabled {
 			continue
 		}
 		enabled++

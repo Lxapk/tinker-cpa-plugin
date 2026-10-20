@@ -79,7 +79,7 @@ func renderAccountsView() string {
 	enabled, cooling, blocked := 0, 0, 0
 	now := nowUnixMilli()
 	for _, record := range accounts {
-		if record.Disabled || record.Blocked {
+		if record.Disabled || record.AuthRejected {
 			blocked++
 			continue
 		}
@@ -137,7 +137,7 @@ func renderAccountRow(record accountRecord, now int64) string {
 	switch {
 	case record.Disabled:
 		status = `<span class="pill off">已停用</span>`
-	case record.Blocked:
+	case record.AuthRejected:
 		status = `<span class="pill off">需重新登录</span>`
 	case record.CooldownUntil > now:
 		status = `<span class="pill wait">冷却中</span>`

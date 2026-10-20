@@ -249,7 +249,7 @@ func runWithAccount(request []byte, creds *tinkerCredentials, authID string, ref
 		if errToken != nil {
 			cancel()
 			lastErr = errToken
-			state.accounts.markFailure(current.accountKey(), errToken.Error(), true)
+			state.accounts.markFailure(current.accountKey(), errToken.Error(), failureAuth)
 			next, nextID := rotateAccount(request, current, currentAuthID)
 			if next == nil {
 				break
@@ -268,23 +268,12 @@ func runWithAccount(request []byte, creds *tinkerCredentials, authID string, ref
 		}
 
 		lastErr = errRun
-		hard := false
-		var apiErr *apiError
-		if errors.As(errRun, &apiErr) {
-			hard = apiErr.isAuthError() || apiErr.isQuotaError()
-			// An auth rejection is not proof that the account is dead: Tinker's
-			// access token lives 15 minutes and CPA refreshes it on its own
-			// schedule, so a request that lands just before that refresh fails
-			// with a valid credential behind it. Marking the account blocked here
-			// is what made it look permanently dead — the flag then outlived the
-			// expired token that caused it. Only a failed refresh is evidence
-			// enough, and that path sets the flag itself.
-		}
-		state.accounts.markFailure(usable.accountKey(), errRun.Error(), hard)
+		kind := classifyFailure(errRun)
+		state.accounts.markFailure(usable.accountKey(), errRun.Error(), kind)
 
-		if !hard {
-			// A transient failure says nothing about the account; retrying on a
-			// different one would just multiply the failure.
+		if kind == failureTransient || kind == failureRate {
+			// A blip says nothing about the account; retrying on a different one
+			// would just multiply the failure.
 			break
 		}
 		next, nextID := rotateAccount(request, current, currentAuthID)
@@ -315,7 +304,7 @@ func rotateAccount(request []byte, current *tinkerCredentials, currentAuthID str
 		currentKey = current.accountKey()
 	}
 	for _, record := range state.accounts.list() {
-		if record.Disabled || record.Blocked {
+		if record.Disabled {
 			continue
 		}
 		if record.Key == currentKey {
@@ -407,4 +396,42 @@ func itoa(v int) string {
 // decodeBodyString reads a body as a string, used for logging.
 func decodeBodyString(raw []byte) string {
 	return strings.TrimSpace(string(bytes.TrimSpace(raw)))
+}
+
+// classifyFailure maps an execution error onto a cooldown class.
+//
+// Ported from the reference plugin: the status code alone is not enough because
+// Tinker surfaces semantics in the body, and because a 5xx may be a throttle.
+func classifyFailure(err error) failureKind {
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) {
+		// Transport failure, timeout, JSON decode problem: nothing about the
+		// credential.
+		return failureTransient
+	}
+	lowered := strings.ToLower(apiErr.Message)
+
+	// An expired access token is not a broken credential: CPA refreshes it on its
+	// own schedule, and Tinker's tokens live only 15 minutes, so a request that
+	// lands just before that refresh fails with a perfectly good account behind
+	// it. Parking the account for the hard window here is what turned a routine
+	// refresh gap into "需重新登录".
+	if strings.Contains(lowered, "expired") && !strings.Contains(lowered, "refresh token") {
+		return failureTransient
+	}
+
+	switch {
+	case apiErr.isAuthError():
+		return failureAuth
+	case apiErr.isQuotaError():
+		return failureQuota
+	case apiErr.Status == 429,
+		strings.Contains(lowered, "rate limit"),
+		strings.Contains(lowered, "too many requests"),
+		strings.Contains(lowered, "频率"),
+		strings.Contains(lowered, "限流"):
+		return failureRate
+	default:
+		return failureTransient
+	}
 }
