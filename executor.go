@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"errors"
 	"net/http"
 	"strings"
@@ -102,7 +104,8 @@ func executorExecute(request []byte) ([]byte, error) {
 	}
 
 	started := time.Now()
-	result, used, errRun := runWithAccount(request, creds, req.AuthID, ref, buildToolInputs(ref, prompt, body))
+	result, used, errRun := runWithAccount(request, creds, req.AuthID, ref,
+		buildToolInputs(ref, prompt, body), collectImageURLs(chatReq.Messages))
 	if errRun != nil {
 		state.logs.add(callEntry{
 			Account:  creds.label(),
@@ -165,7 +168,7 @@ func executeImages(req executorRequest, body []byte, creds *tinkerCredentials) (
 
 	started := time.Now()
 	result, used, errRun := runWithAccount(nil, creds, req.AuthID, ref,
-		buildToolInputs(ref, prompt, body))
+		buildToolInputs(ref, prompt, body), imagesFromImagesRequest(imgReq))
 	if errRun != nil {
 		state.logs.add(callEntry{
 			Account:  creds.label(),
@@ -238,7 +241,8 @@ func executorExecuteStream(request []byte) ([]byte, error) {
 	// content: a client that times out waiting for its first byte gets nothing
 	// from an empty preface.
 	started := time.Now()
-	result, used, errRun := runWithAccount(request, creds, req.AuthID, ref, buildToolInputs(ref, prompt, body))
+	result, used, errRun := runWithAccount(request, creds, req.AuthID, ref,
+		buildToolInputs(ref, prompt, body), collectImageURLs(chatReq.Messages))
 	if errRun != nil {
 		return errorEnvelope("upstream_error", errRun.Error(), httpStatusOf(errRun)), nil
 	}
@@ -314,7 +318,7 @@ func buildSSEFrames(id, model, text string) []pluginapi.ExecutorStreamChunk {
 // whether to retry. isAuthError means the token is dead and a different account
 // may well work; a quota error means the same. A transport failure is retried
 // once on the same account, since it says nothing about the credential.
-func runWithAccount(request []byte, creds *tinkerCredentials, authID string, ref toolRef, inputs map[string]any) (*generationResult, *tinkerCredentials, error) {
+func runWithAccount(request []byte, creds *tinkerCredentials, authID string, ref toolRef, inputs map[string]any, imageURLs []string) (*generationResult, *tinkerCredentials, error) {
 	cfg := state.settings.get()
 	maxAttempts := cfg.MaxRotate
 	if maxAttempts <= 0 {
@@ -342,7 +346,25 @@ func runWithAccount(request []byte, creds *tinkerCredentials, authID string, ref
 			continue
 		}
 
-		result, errRun := upstream.generate(hCtx, usable.AccessToken, ref.ToolID, ref.ModelID, inputs)
+		// Reference images must be uploaded first: Tinker's tools take a blob
+		// reference, not a URL, so a client's image_url is downloaded and re-sent
+		// through uploadArtifactFile.
+		runInputs := inputs
+		if len(imageURLs) > 0 {
+			if field := referenceFieldFor(ref.ToolID); field != "" {
+				if refs, errRefs := buildReferenceInputs(hCtx, usable.AccessToken, ref.ToolID, imageURLs); errRefs != nil {
+					cancel()
+					lastErr = errRefs
+					state.accounts.markFailure(usable.accountKey(), errRefs.Error(), failureTransient)
+					break
+				} else if len(refs) > 0 {
+					runInputs = cloneInputs(inputs)
+					runInputs[field] = refs
+				}
+			}
+		}
+
+		result, errRun := upstream.generate(hCtx, usable.AccessToken, ref.ToolID, ref.ModelID, runInputs)
 		cancel()
 
 		if errRun == nil {
@@ -583,7 +605,8 @@ func executeVideo(req executorRequest, body []byte, creds *tinkerCredentials) ([
 	}
 
 	started := time.Now()
-	result, used, errRun := runWithAccount(nil, creds, req.AuthID, ref, inputs)
+	result, used, errRun := runWithAccount(nil, creds, req.AuthID, ref, inputs,
+		imagesFromVideoRequest(videoReq))
 	if errRun != nil {
 		state.logs.add(callEntry{
 			Account:  creds.label(),
@@ -638,4 +661,88 @@ func executeVideoRetrieve(body []byte) ([]byte, error) {
 		Payload: videoRetrieveResponse(id, url),
 		Headers: http.Header{"Content-Type": []string{"application/json"}},
 	})
+}
+
+// buildReferenceInputs downloads and uploads every image the client attached.
+//
+// Tinker's reference fields take a blob reference produced by its own upload
+// mutation, so each URL becomes one {image_blob_id, previewUrl, name} entry. The
+// tool's own field name and count limit are applied by the caller.
+func buildReferenceInputs(ctx context.Context, accessToken, toolID string, urls []string) ([]any, error) {
+	limit := referenceLimit(toolID)
+	if len(urls) > limit {
+		urls = urls[:limit]
+	}
+	out := make([]any, 0, len(urls))
+	for _, rawURL := range urls {
+		data, contentType, name, errFetch := fetchImageBytes(ctx, rawURL)
+		if errFetch != nil {
+			return nil, errFetch
+		}
+		ref, errUpload := upstream.uploadImage(ctx, accessToken, data, name, contentType)
+		if errUpload != nil {
+			return nil, errUpload
+		}
+		out = append(out, ref)
+	}
+	return out, nil
+}
+
+// fetchImageBytes handles both http(s) URLs and data: URLs.
+func fetchImageBytes(ctx context.Context, rawURL string) ([]byte, string, string, error) {
+	if strings.HasPrefix(rawURL, "data:") {
+		// data:image/png;base64,…  — decoded locally, no download needed.
+		comma := strings.Index(rawURL, ",")
+		if comma < 0 {
+			return nil, "", "", errors.New("data URL 格式不正确")
+		}
+		meta := rawURL[len("data:"):comma]
+		contentType := strings.SplitN(meta, ";", 2)[0]
+		if contentType == "" {
+			contentType = "image/png"
+		}
+		payload, errDecode := base64.StdEncoding.DecodeString(rawURL[comma+1:])
+		if errDecode != nil {
+			return nil, "", "", fmt.Errorf("data URL 解码失败: %w", errDecode)
+		}
+		return payload, contentType, "inline." + formatExt(contentType), nil
+	}
+	data, contentType, errFetch := upstream.fetchImage(ctx, rawURL)
+	if errFetch != nil {
+		return nil, "", "", errFetch
+	}
+	name := "reference." + formatExt(contentType)
+	if idx := strings.LastIndex(rawURL, "/"); idx >= 0 && idx < len(rawURL)-1 {
+		candidate := rawURL[idx+1:]
+		if q := strings.Index(candidate, "?"); q > 0 {
+			candidate = candidate[:q]
+		}
+		if strings.Contains(candidate, ".") {
+			name = candidate
+		}
+	}
+	return data, contentType, name, nil
+}
+
+// formatExt maps a content type to a file extension.
+func formatExt(contentType string) string {
+	switch {
+	case strings.Contains(contentType, "png"):
+		return "png"
+	case strings.Contains(contentType, "webp"):
+		return "webp"
+	case strings.Contains(contentType, "gif"):
+		return "gif"
+	default:
+		return "jpg"
+	}
+}
+
+// cloneInputs copies an inputs map so a retry starts from a clean slate.
+func cloneInputs(inputs map[string]any) map[string]any {
+	out := make(map[string]any, len(inputs)+1)
+	for key, value := range inputs {
+		out[key] = value
+	}
+	return out
 }

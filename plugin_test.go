@@ -808,3 +808,72 @@ func TestImagesAndVideoResponsesUseTheirOwnShape(t *testing.T) {
 		t.Errorf("视频响应应带 request_id，得到 %q", video.RequestID)
 	}
 }
+
+// TestCollectImageURLs covers the multimodal parsing: an OpenAI client attaches
+// images as content parts, in either the object or the flat-string form.
+func TestCollectImageURLs(t *testing.T) {
+	messages := []openAIMessage{
+		{Role: "user", Content: json.RawMessage(`[
+			{"type":"text","text":"what is this"},
+			{"type":"image_url","image_url":{"url":"https://example.com/a.png"}},
+			{"type":"image_url","image_url":"https://example.com/b.png"}
+		]`)},
+		{Role: "user", Content: json.RawMessage(`[
+			{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}
+		]`)},
+	}
+	urls := collectImageURLs(messages)
+	if len(urls) != 2 {
+		t.Fatalf("应收集 2 个去重后的图片，得到 %d: %v", len(urls), urls)
+	}
+	if urls[0] != "https://example.com/a.png" || urls[1] != "https://example.com/b.png" {
+		t.Errorf("顺序或内容不对: %v", urls)
+	}
+}
+
+// TestReferenceFieldPerTool guards the field names: they differ per tool and the
+// upstream rejects an input it does not declare.
+func TestReferenceFieldPerTool(t *testing.T) {
+	cases := map[string]string{
+		"claude_text":          "reference_photos",
+		"gemini_text":          "reference_photos",
+		"gemini_image":         "image_urls",
+		"gpt_image":            "reference_images",
+		"grok_image":           "reference_photo",
+		"flux_pro_kontext":     "reference_photos",
+		"minimax_video":        "reference_images",
+		"veo_text_to_video":    "first_frame",
+		"kling_image_to_video": "start_frame",
+		"seedance_video":       "reference_images",
+	}
+	for tool, want := range cases {
+		if got := referenceFieldFor(tool); got != want {
+			t.Errorf("%s 的参考图字段应为 %q，得到 %q", tool, want, got)
+		}
+	}
+}
+
+// TestBuildReferenceInputsRespectsLimit: each tool declares a maximum.
+func TestBuildReferenceInputsRespectsLimit(t *testing.T) {
+	if got := referenceLimit("grok_image"); got != 1 {
+		t.Errorf("grok_image 只接受 1 张参考图，得到 %d", got)
+	}
+	if got := referenceLimit("gemini_image"); got != 10 {
+		t.Errorf("gemini_image 接受 10 张，得到 %d", got)
+	}
+}
+
+// TestFormatExt maps content types to file extensions for the upload.
+func TestFormatExt(t *testing.T) {
+	cases := map[string]string{
+		"image/png":  "png",
+		"image/webp": "webp",
+		"image/jpeg": "jpg",
+		"image/gif":  "gif",
+	}
+	for in, want := range cases {
+		if got := formatExt(in); got != want {
+			t.Errorf("formatExt(%q) = %q, 期望 %q", in, got, want)
+		}
+	}
+}

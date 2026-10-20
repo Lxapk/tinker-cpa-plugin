@@ -188,6 +188,8 @@ type openAIImagesRequest struct {
 	ResponseFormat string `json:"response_format"`
 	OutputFormat   string `json:"output_format"`
 	Background     string `json:"background"`
+	Image          string `json:"image"`
+	ImageURL       string `json:"image_url"`
 	Seconds        string `json:"seconds"`
 	Duration       string `json:"duration"`
 }
@@ -271,6 +273,9 @@ type openAIVideoRequest struct {
 	ImageURL string `json:"image_url"`
 	Image    string `json:"image"`
 }
+
+// Image/ImageURL live on the images request too, so a call can reference an
+// existing picture (image-to-image).
 
 // parseVideoRequest decodes a video creation body.
 func parseVideoRequest(raw []byte) (*openAIVideoRequest, error) {
@@ -375,4 +380,120 @@ func isVideoCreate(req executorRequest, body []byte) bool {
 	// Without a recognisable name, a prompt plus a duration field is a video job.
 	return strings.TrimSpace(probe.Prompt) != "" &&
 		(strings.TrimSpace(probe.Seconds) != "" || strings.TrimSpace(probe.Duration) != "")
+}
+
+// collectImageURLs pulls every image reference out of a chat message array.
+//
+// OpenAI clients send multimodal content as parts:
+//
+//	{"type":"image_url","image_url":{"url":"https://…"}}
+//
+// and a data URL is allowed too. Tinker has no notion of an inline image, so these
+// have to be uploaded before the generation runs.
+func collectImageURLs(messages []openAIMessage) []string {
+	var urls []string
+	seen := map[string]bool{}
+	for _, msg := range messages {
+		if len(msg.Content) == 0 {
+			continue
+		}
+		var parts []struct {
+			Type     string          `json:"type"`
+			ImageURL json.RawMessage `json:"image_url"`
+		}
+		if err := json.Unmarshal(msg.Content, &parts); err != nil {
+			continue
+		}
+		for _, part := range parts {
+			url := imageURLFromPart(part.ImageURL)
+			if url == "" || seen[url] {
+				continue
+			}
+			seen[url] = true
+			urls = append(urls, url)
+		}
+	}
+	return urls
+}
+
+// referenceFieldFor returns the input field a tool uses for reference images.
+//
+// The name differs per tool and an unknown field is rejected by the upstream's
+// input validation, so it is looked up rather than guessed.
+func referenceFieldFor(toolID string) string {
+	switch toolID {
+	case "gemini_image":
+		return "image_urls"
+	case "gpt_image", "seedance_video", "minimax_video":
+		return "reference_images"
+	case "claude_text", "gemini_text", "grok_text", "openai_text", "flux_pro_kontext":
+		return "reference_photos"
+	case "grok_image":
+		return "reference_photo"
+	case "veo_text_to_video":
+		return "first_frame"
+	case "kling_image_to_video":
+		return "start_frame"
+	}
+	return ""
+}
+
+// referenceLimit caps how many images a tool accepts.
+func referenceLimit(toolID string) int {
+	switch toolID {
+	case "gemini_image", "gpt_image":
+		return 10
+	case "minimax_video":
+		return 9
+	case "grok_image", "veo_text_to_video", "kling_image_to_video":
+		return 1
+	default:
+		return 5
+	}
+}
+
+// imageURLFromPart accepts either {"url":"…"} or a bare string.
+func imageURLFromPart(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var asObject struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(raw, &asObject); err == nil && strings.TrimSpace(asObject.URL) != "" {
+		return strings.TrimSpace(asObject.URL)
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return strings.TrimSpace(asString)
+	}
+	return ""
+}
+
+// imagesFromImagesRequest returns the reference images an images call carried.
+func imagesFromImagesRequest(req *openAIImagesRequest) []string {
+	if req == nil {
+		return nil
+	}
+	var out []string
+	for _, candidate := range []string{req.Image, req.ImageURL} {
+		if strings.TrimSpace(candidate) != "" {
+			out = append(out, strings.TrimSpace(candidate))
+		}
+	}
+	return out
+}
+
+// imagesFromVideoRequest returns the frame references a video call carried.
+func imagesFromVideoRequest(req *openAIVideoRequest) []string {
+	if req == nil {
+		return nil
+	}
+	var out []string
+	for _, candidate := range []string{req.ImageURL, req.Image} {
+		if strings.TrimSpace(candidate) != "" {
+			out = append(out, strings.TrimSpace(candidate))
+		}
+	}
+	return out
 }

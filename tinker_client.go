@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
@@ -513,4 +514,132 @@ func (c *tinkerClient) fetchArtifact(ctx context.Context, accessToken, artifactI
 		return nil, errors.New("读取生成结果失败")
 	}
 	return last, nil
+}
+
+// uploadImage sends one image to Tinker and returns the blob reference the tool
+// inputs expect.
+//
+// Tinker does not accept a bare URL for a reference photo: its upload UI mints a
+// blob through uploadArtifactFile and then passes {image_blob_id: <signedId>,
+// previewUrl, name} as the input value. So a client's image_url has to be
+// downloaded here and re-uploaded.
+//
+// The GraphQL multipart request spec is used: operations, map and the file parts.
+func (c *tinkerClient) uploadImage(ctx context.Context, accessToken string, data []byte, filename, contentType string) (map[string]any, error) {
+	if len(data) == 0 {
+		return nil, errors.New("图片内容为空")
+	}
+	operation := map[string]any{
+		"operationName": "Upload_ArtifactFile",
+		"variables": map[string]any{
+			"input": map[string]any{"file": nil},
+		},
+		"extensions": map[string]any{
+			"persistedQuery": map[string]any{
+				"version":    1,
+				"sha256Hash": opHashes["Upload_ArtifactFile"],
+			},
+		},
+	}
+	operationsJSON, errOps := json.Marshal(operation)
+	if errOps != nil {
+		return nil, errOps
+	}
+	mapJSON, _ := json.Marshal(map[string][]string{"0": {"variables.input.file"}})
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if errField := writer.WriteField("operations", string(operationsJSON)); errField != nil {
+		return nil, errField
+	}
+	if errField := writer.WriteField("map", string(mapJSON)); errField != nil {
+		return nil, errField
+	}
+	part, errPart := writer.CreateFormFile("0", filename)
+	if errPart != nil {
+		return nil, errPart
+	}
+	if _, errWrite := part.Write(data); errWrite != nil {
+		return nil, errWrite
+	}
+	if errClose := writer.Close(); errClose != nil {
+		return nil, errClose
+	}
+
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, tinkerBaseURL+"/graphql", &body)
+	if errReq != nil {
+		return nil, errReq
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Client-Name", tinkerClientName)
+	req.Header.Set("X-Platform", "android")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, errDo := c.http.Do(req)
+	if errDo != nil {
+		return nil, fmt.Errorf("上传请求失败: %w", errDo)
+	}
+	defer resp.Body.Close()
+	raw, errRead := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if errRead != nil {
+		return nil, fmt.Errorf("读取上传响应失败: %w", errRead)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, decodeAPIError(resp.StatusCode, raw)
+	}
+	if errGQL := detectGraphQLError(raw); errGQL != nil {
+		return nil, errGQL
+	}
+
+	var parsed struct {
+		Data struct {
+			UploadArtifactFile struct {
+				Blob *struct {
+					SignedID  string `json:"signedId"`
+					URL       string `json:"url"`
+					Filename  string `json:"filename"`
+					ContentTy string `json:"contentType"`
+				} `json:"blob"`
+			} `json:"uploadArtifactFile"`
+		} `json:"data"`
+	}
+	if errUnmarshal := json.Unmarshal(raw, &parsed); errUnmarshal != nil {
+		return nil, errUnmarshal
+	}
+	blob := parsed.Data.UploadArtifactFile.Blob
+	if blob == nil || blob.SignedID == "" {
+		return nil, errors.New("上传未返回 blob")
+	}
+	// This is the exact shape Tinker's own UI puts in the inputs map.
+	return map[string]any{
+		"image_blob_id": blob.SignedID,
+		"previewUrl":    blob.URL,
+		"name":          firstNonEmpty(blob.Filename, filename),
+	}, nil
+}
+
+// fetchImage downloads a client-supplied image URL.
+func (c *tinkerClient) fetchImage(ctx context.Context, rawURL string) ([]byte, string, error) {
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if errReq != nil {
+		return nil, "", errReq
+	}
+	resp, errDo := c.http.Do(req)
+	if errDo != nil {
+		return nil, "", fmt.Errorf("下载图片失败: %w", errDo)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, "", fmt.Errorf("下载图片失败: HTTP %d", resp.StatusCode)
+	}
+	data, errRead := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
+	if errRead != nil {
+		return nil, "", errRead
+	}
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "image/jpeg"
+	}
+	return data, contentType, nil
 }
