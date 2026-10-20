@@ -505,16 +505,12 @@ func TestAuthRejectedDoesNotBlockUsability(t *testing.T) {
 		t.Error("仅标记 AuthRejected 不应让账号不可用")
 	}
 
-	// A hard failure does cool it down, and the account returns once that passes.
+	// Cooling is CPA's job, so a failure must not take the account out of
+	// rotation here — the plugin would then refuse an account the host still
+	// considers healthy.
 	state.accounts.markFailure(key, "invalid JWT refresh token", failureAuth)
-	if state.accounts.usable(key) {
-		t.Error("鉴权失败应进入冷却")
-	}
-	state.accounts.mu.Lock()
-	state.accounts.items[key].CooldownUntil = 0
-	state.accounts.mu.Unlock()
 	if !state.accounts.usable(key) {
-		t.Error("冷却结束后应恢复可用，AuthRejected 不应继续阻止")
+		t.Error("失败不应让插件自己停用账号，冷却由 CPA 负责")
 	}
 
 	// A success clears the badge too.
@@ -524,29 +520,32 @@ func TestAuthRejectedDoesNotBlockUsability(t *testing.T) {
 	}
 }
 
-// TestTransientFailureUsesSoftCooldown ports the reference plugin's failure
-// classification: a blip must not park an account for the hard window.
-func TestTransientFailureUsesSoftCooldown(t *testing.T) {
+// TestFailureDoesNotSchedulePrivateCooldown guards the split of responsibility:
+// CPA owns cooldowns, so the plugin must not keep a second schedule the panel
+// cannot explain.
+func TestFailureDoesNotSchedulePrivateCooldown(t *testing.T) {
 	state.accounts = newAccountStore()
 	state.settings.setDataDir("")
-	cfg := state.settings.get()
 
 	creds := &tinkerCredentials{Email: "user@example.com", UID: "7"}
 	key := creds.accountKey()
 	state.accounts.observe(creds, "")
 
-	before := timeNowNano() / 1e6
-	state.accounts.markFailure(key, "dial tcp: timeout", failureTransient)
-	record := state.accounts.lookup(key)
-	if record == nil {
-		t.Fatal("记录未创建")
+	for _, kind := range []failureKind{failureTransient, failureRate, failureQuota, failureAuth} {
+		state.accounts.markFailure(key, "boom", kind)
+		record := state.accounts.lookup(key)
+		if record == nil {
+			t.Fatal("记录未创建")
+		}
+		if record.CooldownUntil != 0 {
+			t.Errorf("kind=%d 不应写入插件私有冷却", kind)
+		}
+		if !state.accounts.usable(key) {
+			t.Errorf("kind=%d 失败后账号仍应可用（冷却归 CPA）", kind)
+		}
 	}
-	cooldown := record.CooldownUntil - int64(before)
-	if cooldown > cfg.SoftCooldownMillis*11 {
-		t.Errorf("瞬时失败用了硬冷却: %d ms（soft=%d）", cooldown, cfg.SoftCooldownMillis)
-	}
-	if record.AuthRejected {
-		t.Error("瞬时失败不应标记 AuthRejected")
+	if record := state.accounts.lookup(key); record != nil && !record.AuthRejected {
+		t.Error("鉴权失败应留下徽章供面板提示")
 	}
 }
 

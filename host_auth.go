@@ -488,7 +488,6 @@ func liveAccounts() []accountRecord {
 			record.LastUsed = cached.LastUsed
 			record.LastError = cached.LastError
 			record.Failures = cached.Failures
-			record.CooldownUntil = cached.CooldownUntil
 			record.AddedAt = cached.AddedAt
 			if cached.Disabled {
 				record.Disabled = true

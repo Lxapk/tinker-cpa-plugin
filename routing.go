@@ -144,10 +144,9 @@ func relayableCandidates(candidates []pluginapi.SchedulerAuthCandidate) []plugin
 		}
 		key := candidateKey(candidate)
 		if record := state.accounts.lookup(key, candidate.ID); record != nil {
+			// Only a disabled account is filtered out here; cooling is CPA's
+			// decision and it will not offer a credential it has parked.
 			if record.Disabled {
-				continue
-			}
-			if record.CooldownUntil > nowUnixMilli() {
 				continue
 			}
 		}
@@ -229,16 +228,12 @@ func routingStatusJSON() map[string]any {
 	rotation.mu.Unlock()
 
 	accounts := liveAccounts()
-	enabled, cooling := 0, 0
-	now := nowUnixMilli()
+	enabled := 0
 	for _, record := range accounts {
 		if record.Disabled {
 			continue
 		}
 		enabled++
-		if record.CooldownUntil > now {
-			cooling++
-		}
 	}
 
 	return map[string]any{
@@ -248,7 +243,6 @@ func routingStatusJSON() map[string]any {
 		"cooldown":       cfg.CooldownSeconds,
 		"last":           last,
 		"usable":         enabled,
-		"cooling":        cooling,
 	}
 }
 

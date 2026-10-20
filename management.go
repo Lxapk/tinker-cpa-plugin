@@ -232,7 +232,6 @@ func accountsPayload() map[string]any {
 
 	rows := make([]map[string]any, 0, len(records))
 	enabled := 0
-	now := nowUnixMilli()
 	for _, record := range records {
 		row := map[string]any{
 			"key":            record.Key,
@@ -247,13 +246,9 @@ func accountsPayload() map[string]any {
 			"last_used":      formatUnix(record.LastUsed),
 			"expires_at":     formatUnix(record.ExpiresAt),
 			"calls":          record.CallCount,
-			"cooldown_until": formatUnixMilli(record.CooldownUntil),
 		}
 		if !record.Disabled && !record.AuthRejected {
 			enabled++
-		}
-		if record.CooldownUntil > now {
-			row["cooling"] = true
 		}
 		rows = append(rows, row)
 	}

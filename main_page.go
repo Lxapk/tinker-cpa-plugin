@@ -76,17 +76,13 @@ func renderNav() string {
 func renderAccountsView() string {
 	accounts := liveAccounts()
 	total := len(accounts)
-	enabled, cooling, blocked := 0, 0, 0
-	now := nowUnixMilli()
+	enabled, blocked := 0, 0
 	for _, record := range accounts {
 		if record.Disabled || record.AuthRejected {
 			blocked++
 			continue
 		}
 		enabled++
-		if record.CooldownUntil > now {
-			cooling++
-		}
 	}
 
 	var b strings.Builder
@@ -95,7 +91,7 @@ func renderAccountsView() string {
 	b.WriteString(`<div class="stats">`)
 	statCard(&b, "", "账号总数", total)
 	statCard(&b, "good", "启用中", enabled)
-	statCard(&b, "warn", "冷却中", cooling)
+	statCard(&b, "warn", "正常", enabled)
 	statCard(&b, "bad", "已停用", blocked)
 	b.WriteString(`</div>`)
 
@@ -114,7 +110,7 @@ func renderAccountsView() string {
 		b.WriteString(`<th class="num">到期</th><th class="act"></th>`)
 		b.WriteString(`</tr></thead><tbody>`)
 		for _, record := range accounts {
-			b.WriteString(renderAccountRow(record, now))
+			b.WriteString(renderAccountRow(record, 0))
 		}
 		b.WriteString(`</tbody></table></div>`)
 	}
@@ -127,7 +123,7 @@ func renderAccountsView() string {
 }
 
 // renderAccountRow draws one account.
-func renderAccountRow(record accountRecord, now int64) string {
+func renderAccountRow(record accountRecord, _ int64) string {
 	name := record.Email
 	if strings.TrimSpace(name) == "" {
 		name = record.Key
@@ -139,8 +135,6 @@ func renderAccountRow(record accountRecord, now int64) string {
 		status = `<span class="pill off">已停用</span>`
 	case record.AuthRejected:
 		status = `<span class="pill off">需重新登录</span>`
-	case record.CooldownUntil > now:
-		status = `<span class="pill wait">冷却中</span>`
 	}
 
 	action := `<button type="button" class="xs danger" data-call="toggleAccount" data-key="` +

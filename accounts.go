@@ -43,8 +43,11 @@ type accountRecord struct {
 	// ConsecutiveFailures feeds the park threshold.
 	Failures  int   `json:"failures"`
 	LastError string `json:"last_error,omitempty"`
-	// CooldownUntil suppresses a credential until this Unix ms timestamp.
-	CooldownUntil int64  `json:"cooldown_until,omitempty"`
+	// CooldownUntil is retained only so an old cache file still parses. The plugin
+	// no longer sets it: CPA owns credential cooldowns (see
+	// conductor_cooldown.go), and a second, private schedule could only disagree
+	// with the one the panel shows.
+	CooldownUntil int64 `json:"cooldown_until,omitempty"`
 	LastUsed      int64  `json:"last_used,omitempty"`
 	AddedAt       int64  `json:"added_at,omitempty"`
 	// CallCount feeds the by_usage strategy and the panel's statistics.
@@ -190,16 +193,14 @@ const (
 	failureQuota
 )
 
-// markFailure records a failed call and applies the cooldown for its kind.
+// markFailure records a failed call for the panel's statistics.
 //
-// Transient failures only park the account briefly, and only beyond a threshold;
-// hard failures apply the configured long cooldown. This mirrors the reference
-// implementation, where a single soft failure costs seconds and a sustained
-// streak is what actually takes an account out.
+// It deliberately does not schedule a cooldown. CPA already cools credentials down
+// on its own (quota and transient-error cooldowns are configured and persisted
+// there), and a private schedule here had two consequences: the panel showed a
+// cooldown CPA knew nothing about, and the plugin stopped routing to an account
+// the host still considered healthy.
 func (s *accountStore) markFailure(key, reason string, kind failureKind) {
-	cfg := state.settings.get()
-	now := time.Now().UnixMilli()
-
 	s.mu.Lock()
 	record, ok := s.items[key]
 	if !ok {
@@ -210,26 +211,11 @@ func (s *accountStore) markFailure(key, reason string, kind failureKind) {
 	record.CallCount++
 	record.FailureCount++
 	record.LastError = reason
-
-	switch kind {
-	case failureAuth:
-		// The server refused the credential. Cool it down for the long window and
-		// flag it for the panel, but a later refresh or login clears both.
-		record.CooldownUntil = now + cfg.CooldownMillis
+	// An auth rejection is the one thing worth surfacing on the row: it tells the
+	// operator a re-login is needed. Everything else is CPA's business.
+	if kind == failureAuth {
 		record.AuthRejected = true
 		record.AuthReason = reason
-	case failureQuota:
-		record.CooldownUntil = now + cfg.CooldownMillis
-	case failureRate:
-		record.CooldownUntil = now + cfg.SoftCooldownMillis
-	default:
-		// Transient: park only after a streak, and briefly.
-		if record.Failures >= cfg.ErrorThreshold {
-			record.CooldownUntil = now + cfg.SoftCooldownMillis*10
-			record.Failures = 0
-		} else {
-			record.CooldownUntil = now + cfg.SoftCooldownMillis
-		}
 	}
 	s.mu.Unlock()
 	s.save(state.settings.dataDir())
@@ -328,8 +314,7 @@ func (s *accountStore) usable(key string) bool {
 	if !ok {
 		return true
 	}
-	if record.Disabled {
-		return false
-	}
-	return record.CooldownUntil <= time.Now().UnixMilli()
+	// Only the operator's switch decides. Availability of a live credential is
+	// CPA's call, expressed through its own cooldown state.
+	return !record.Disabled
 }
