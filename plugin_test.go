@@ -299,3 +299,26 @@ func TestAccountTogglePersistsDisabled(t *testing.T) {
 		t.Error("被禁用的账号不应可用")
 	}
 }
+
+// TestParseCredentialInputAcceptsWholeAuthFile guards the shape CPA actually
+// hands auth.parse: the entire auth file, with the plugin blob nested under
+// "storage". A parser that only understands the flat shape silently drops the
+// credential and the host rewrites the file without it.
+func TestParseCredentialInputAcceptsWholeAuthFile(t *testing.T) {
+	whole := []byte(`{"type":"tinker","provider":"tinker","disabled":false,` +
+		`"storage":{"access_token":"token-abcdefghijklmnop","refresh_token":"rt-1",` +
+		`"email":"user@example.com","uid":"42"}}`)
+	creds, errParse := parseCredentialInput(whole)
+	if errParse != nil {
+		t.Fatalf("整文件解析失败: %v", errParse)
+	}
+	if creds.AccessToken != "token-abcdefghijklmnop" {
+		t.Errorf("access_token = %q", creds.AccessToken)
+	}
+	if creds.Email != "user@example.com" {
+		t.Errorf("email = %q", creds.Email)
+	}
+	if creds.accountKey() != "42" {
+		t.Errorf("accountKey = %q", creds.accountKey())
+	}
+}

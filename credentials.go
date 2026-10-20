@@ -88,6 +88,29 @@ func parseCredentials(raw []byte) (*tinkerCredentials, error) {
 	return normalizeCredentials(&creds), nil
 }
 
+// unwrapAuthFile extracts the plugin-owned storage from a whole CPA auth file.
+//
+// CPA hands auth.parse the entire file ({"type","provider","storage","disabled"}),
+// not just the plugin's blob, so a parser that only understands the flat shape
+// silently drops the credential — the host then rewrites the file with the
+// fields it could not read, and the account comes back empty.
+func unwrapAuthFile(raw []byte) []byte {
+	var doc struct {
+		Storage json.RawMessage `json:"storage"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return raw
+	}
+	if len(doc.Storage) > 0 && strings.HasPrefix(strings.TrimSpace(string(doc.Storage)), "{") {
+		return doc.Storage
+	}
+	if len(doc.Data) > 0 && strings.HasPrefix(strings.TrimSpace(string(doc.Data)), "{") {
+		return doc.Data
+	}
+	return raw
+}
+
 // parseCredentialInput accepts whatever the operator pasted: a JSON blob, a
 // bare token, or an "email + token" pair pasted as two lines.
 func parseCredentialInput(raw []byte) (*tinkerCredentials, error) {
@@ -99,6 +122,12 @@ func parseCredentialInput(raw []byte) (*tinkerCredentials, error) {
 	if strings.HasPrefix(trimmed, "{") {
 		if creds, err := parseCredentials([]byte(trimmed)); err == nil {
 			return creds, nil
+		}
+		// A whole auth file wraps the plugin blob under "storage".
+		if unwrapped := unwrapAuthFile([]byte(trimmed)); len(unwrapped) > 0 {
+			if creds, err := parseCredentials(unwrapped); err == nil {
+				return creds, nil
+			}
 		}
 	}
 

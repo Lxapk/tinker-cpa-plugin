@@ -103,24 +103,24 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 func buildRegistration() registration {
 	return registration{
 		SchemaVersion: pluginabi.SchemaVersion,
-		Metadata: metadataInfo{
+		Metadata: pluginapi.Metadata{
 			Name:             pluginDisplayName,
 			Version:          pluginVersion,
 			Author:           pluginAuthor,
 			GitHubRepository: pluginRepo,
-			ConfigFields: []configFieldMetadata{
-				{Name: "refresh_skew_seconds", Type: "integer", Description: "凭据提前刷新的秒数（Tinker 的 access token 只有约 15 分钟）。"},
-				{Name: "poll_interval_millis", Type: "integer", Description: "生成任务的状态轮询间隔。"},
-				{Name: "generation_timeout_seconds", Type: "integer", Description: "单次生成的最长等待时间，视频任务需要数分钟。"},
-				{Name: "image_prompt_limit", Type: "integer", Description: "图像/视频工具的 prompt 字符上限，超限会被上游直接拒绝。"},
-				{Name: "text_prompt_limit", Type: "integer", Description: "文本工具 prompt 字符上限。"},
-				{Name: "max_rotate", Type: "integer", Description: "单次请求最多换几个账号。"},
-				{Name: "cooldown_millis", Type: "integer", Description: "硬失败（鉴权/额度）后账号的冷却时长。"},
-				{Name: "soft_cooldown_millis", Type: "integer", Description: "瞬时失败后的短暂冷却。"},
-				{Name: "error_threshold", Type: "integer", Description: "连续失败多少次后暂停账号。"},
-				{Name: "log_retention_days", Type: "integer", Description: "调用记录保留天数。"},
-				{Name: "default_model", Type: "string", Description: "客户端未指定模型时使用的模型。"},
-				{Name: "debug", Type: "boolean", Description: "输出更详细的日志。"},
+			ConfigFields: []pluginapi.ConfigField{
+				{Name: "refresh_skew_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "凭据提前刷新的秒数（Tinker 的 access token 只有约 15 分钟）。"},
+				{Name: "poll_interval_millis", Type: pluginapi.ConfigFieldTypeInteger, Description: "生成任务的状态轮询间隔。"},
+				{Name: "generation_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "单次生成的最长等待时间，视频任务需要数分钟。"},
+				{Name: "image_prompt_limit", Type: pluginapi.ConfigFieldTypeInteger, Description: "图像/视频工具的 prompt 字符上限，超限会被上游直接拒绝。"},
+				{Name: "text_prompt_limit", Type: pluginapi.ConfigFieldTypeInteger, Description: "文本工具 prompt 字符上限。"},
+				{Name: "max_rotate", Type: pluginapi.ConfigFieldTypeInteger, Description: "单次请求最多换几个账号。"},
+				{Name: "cooldown_millis", Type: pluginapi.ConfigFieldTypeInteger, Description: "硬失败（鉴权/额度）后账号的冷却时长。"},
+				{Name: "soft_cooldown_millis", Type: pluginapi.ConfigFieldTypeInteger, Description: "瞬时失败后的短暂冷却。"},
+				{Name: "error_threshold", Type: pluginapi.ConfigFieldTypeInteger, Description: "连续失败多少次后暂停账号。"},
+				{Name: "log_retention_days", Type: pluginapi.ConfigFieldTypeInteger, Description: "调用记录保留天数。"},
+				{Name: "default_model", Type: pluginapi.ConfigFieldTypeString, Description: "客户端未指定模型时使用的模型。"},
+				{Name: "debug", Type: pluginapi.ConfigFieldTypeBoolean, Description: "输出更详细的日志。"},
 			},
 		},
 		Capabilities: registrationCaps{

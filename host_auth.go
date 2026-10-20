@@ -134,13 +134,8 @@ func readAuthFileCredentials(path string) *tinkerCredentials {
 	}
 	// The auth file wraps the plugin storage in "storage"; older shapes keep the
 	// token at the top level.
-	var doc struct {
-		Storage json.RawMessage `json:"storage"`
-	}
-	if errUnmarshal := json.Unmarshal(raw, &doc); errUnmarshal == nil && len(doc.Storage) > 0 {
-		if creds, errParse := parseCredentials(doc.Storage); errParse == nil {
-			return creds
-		}
+	if creds, errParse := parseCredentials(unwrapAuthFile(raw)); errParse == nil {
+		return creds
 	}
 	if creds, errParse := parseCredentials(raw); errParse == nil {
 		return creds

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 const (
@@ -64,25 +66,9 @@ type identifierResponse struct {
 
 // registration mirrors pluginhost.rpcRegistration.
 type registration struct {
-	SchemaVersion uint32             `json:"schema_version"`
-	Metadata      metadataInfo       `json:"metadata"`
-	Capabilities  registrationCaps   `json:"capabilities"`
-}
-
-// metadataInfo mirrors pluginapi.Metadata but is declared locally so the
-// registration payload does not depend on the SDK's optional fields.
-type metadataInfo struct {
-	Name             string                `json:"name"`
-	Version          string                `json:"version"`
-	Author           string                `json:"author"`
-	GitHubRepository string                `json:"github_repository"`
-	ConfigFields     []configFieldMetadata `json:"config_fields,omitempty"`
-}
-
-type configFieldMetadata struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Description string `json:"description,omitempty"`
+	SchemaVersion uint32           `json:"schema_version"`
+	Metadata      pluginapi.Metadata `json:"metadata"`
+	Capabilities  registrationCaps `json:"capabilities"`
 }
 
 // registrationCaps mirrors pluginhost.rpcCapabilities. Only the fields this
@@ -115,21 +101,16 @@ type registrationCaps struct {
 }
 
 // managementRegistrationResponse mirrors pluginhost.rpcManagementRegistrationResponse.
+// managementRegistrationResponse mirrors pluginhost.rpcManagementRegistrationResponse.
+//
+// The route types come straight from the SDK: pluginapi.ManagementRoute and
+// pluginapi.ResourceRoute carry no json tags, so the host decodes their
+// PascalCase field names. A local snake_case mirror would produce routes with an
+// empty Path that the host silently drops, and the panel entry would never
+// appear.
 type managementRegistrationResponse struct {
-	Routes    []managementRoute `json:"routes,omitempty"`
-	Resources []resourceRoute   `json:"resources,omitempty"`
-}
-
-type managementRoute struct {
-	Method      string `json:"method"`
-	Path        string `json:"path"`
-	Description string `json:"description,omitempty"`
-}
-
-type resourceRoute struct {
-	Path        string `json:"path"`
-	Menu        string `json:"menu"`
-	Description string `json:"description,omitempty"`
+	Routes    []pluginapi.ManagementRoute `json:"routes,omitempty"`
+	Resources []pluginapi.ResourceRoute   `json:"resources,omitempty"`
 }
 
 // statusOf is a tiny helper for building error statuses in handlers.

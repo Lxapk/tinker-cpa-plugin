@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 // managementRegistration declares the plugin's management surface.
@@ -15,7 +17,7 @@ import (
 // routes under /v0/management/.
 func managementRegistration() managementRegistrationResponse {
 	return managementRegistrationResponse{
-		Resources: []resourceRoute{
+		Resources: []pluginapi.ResourceRoute{
 			{
 				// The path must not be "/": CPA normalizes a resource path with
 				// strings.TrimRight(path, "/") and rejects the result when it
@@ -26,7 +28,7 @@ func managementRegistration() managementRegistrationResponse {
 				Description: "Tinker 账号、启用状态与最近调用，集中在这一页。",
 			},
 		},
-		Routes: []managementRoute{
+		Routes: []pluginapi.ManagementRoute{
 			{Method: http.MethodGet, Path: "/tinker/accounts", Description: "Tinker 账号列表（含启用状态）。"},
 			{Method: http.MethodPost, Path: "/tinker/account/toggle", Description: "启用或禁用某个账号。"},
 			{Method: http.MethodPost, Path: "/tinker/account/remove", Description: "移除某个账号的本地记录。"},
@@ -39,13 +41,14 @@ func managementRegistration() managementRegistrationResponse {
 }
 
 // managementRequest is what CPA hands to management.handle.
-type managementRequest struct {
-	Method  string            `json:"method"`
-	Path    string            `json:"path"`
-	Query   map[string]string `json:"query"`
-	Headers map[string]string `json:"headers"`
-	Body    []byte            `json:"body"`
-}
+//
+// It is the SDK type rather than a local mirror: pluginapi.ManagementRequest
+// carries no json tags, so the host sends "Method"/"Path"/"Headers"/... in
+// PascalCase, and Headers/Query are http.Header and url.Values (maps of slices),
+// not strings. A local mirror with lowercase tags fails to decode outright
+// ("cannot unmarshal array into Go struct field ... headers of type string") and
+// the panel gets a 502 from the host.
+type managementRequest = pluginapi.ManagementRequest
 
 // normalizeManagementPath reduces a request path to the plugin-relative form.
 //
@@ -225,9 +228,14 @@ func accountsPayload() map[string]any {
 	}
 
 	// Accounts the plugin knows about but the host no longer lists (a file was
-	// deleted outside the panel) still deserve a row, marked as orphaned.
+	// deleted outside the panel) still deserve a row, marked as orphaned —
+	// unless nothing identifies the account, in which case the row would be a
+	// nameless ghost left over from an earlier failed import.
 	for _, record := range records {
 		if seen[strings.ToLower(record.Key)] {
+			continue
+		}
+		if strings.TrimSpace(record.Email) == "" && strings.TrimSpace(record.AuthIndex) == "" {
 			continue
 		}
 		rows = append(rows, map[string]any{
