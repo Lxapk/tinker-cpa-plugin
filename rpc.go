@@ -18,7 +18,7 @@ const (
 	pluginName = "tinker"
 	// pluginDisplayName is what a person reads.
 	pluginDisplayName = "Tinker"
-	pluginVersion     = "0.2.9"
+	pluginVersion     = "0.3.0"
 	pluginAuthor      = "Lxapk"
 	pluginRepo        = "https://github.com/Lxapk/tinker-cpa-plugin"
 )

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -68,10 +69,25 @@ func decodeExecutorRequest(request []byte) (executorRequest, []byte, *tinkerCred
 /* ---------- executor.execute ---------- */
 
 // executorExecute answers executor.execute (non-streaming).
+//
+// Two request shapes arrive here: chat completions (a message array) and images
+// generations (a flat prompt object). They are parsed separately and answered in
+// their own format, so an OpenAI client can use either endpoint.
 func executorExecute(request []byte) ([]byte, error) {
 	req, body, creds, errDecode := decodeExecutorRequest(request)
 	if errDecode != nil {
 		return errorEnvelope("invalid_executor_request", errDecode.Error(), 400), nil
+	}
+	// A retrieval carries only {"request_id": ...} and is answered from the stored
+	// result; a create carries a prompt.
+	if isVideoRetrieve(body) {
+		return executeVideoRetrieve(body)
+	}
+	if isVideoCreate(req, body) {
+		return executeVideo(req, body, creds)
+	}
+	if detectRequestKind(body) == kindImages {
+		return executeImages(req, body, creds)
 	}
 
 	chatReq, errParse := parseChatRequest(body)
@@ -124,6 +140,63 @@ func executorExecute(request []byte) ([]byte, error) {
 	})
 }
 
+// executeImages answers /v1/images/generations.
+//
+// The response is the images shape — {"created":…,"data":[{"url":…}]} — not a chat
+// completion, because that is what the caller's endpoint promises. Returning a chat
+// body here would leave an images client with nothing it can parse.
+func executeImages(req executorRequest, body []byte, creds *tinkerCredentials) ([]byte, error) {
+	imgReq, errParse := parseImagesRequest(body)
+	if errParse != nil {
+		return errorEnvelope("invalid_request", errParse.Error(), 400), nil
+	}
+	prompt := strings.TrimSpace(imgReq.Prompt)
+	if prompt == "" {
+		return errorEnvelope("invalid_request", "prompt is required", 400), nil
+	}
+
+	modelName := firstNonEmpty(req.Model, imgReq.Model)
+	ref := resolveTool(modelName)
+	if ref.OutputType != "image" {
+		// The endpoint is for images; a text model named here is a client mistake.
+		ref = defaultToolForType("image")
+	}
+	prompt = limitPrompt(prompt, ref)
+
+	started := time.Now()
+	result, used, errRun := runWithAccount(nil, creds, req.AuthID, ref,
+		buildToolInputs(ref, prompt, body))
+	if errRun != nil {
+		state.logs.add(callEntry{
+			Account:  creds.label(),
+			Model:    ref.OpenAI,
+			Tool:     ref.ToolID,
+			Status:   "error",
+			Duration: time.Since(started).Milliseconds(),
+			Detail:   errRun.Error(),
+		})
+		return errorEnvelope("upstream_error", errRun.Error(), httpStatusOf(errRun)), nil
+	}
+
+	url := extractMediaURL(result.Artifact)
+	if url == "" {
+		return errorEnvelope("empty_result", "生成完成但没有返回图片", 502), nil
+	}
+
+	state.logs.add(callEntry{
+		Account:  used.label(),
+		Model:    ref.OpenAI,
+		Tool:     ref.ToolID,
+		Status:   "ok",
+		Duration: time.Since(started).Milliseconds(),
+	})
+
+	return okEnvelope(pluginapi.ExecutorResponse{
+		Payload: imagesResponseBody([]string{url}, imgReq.ResponseFormat),
+		Headers: http.Header{"Content-Type": []string{"application/json"}},
+	})
+}
+
 /* ---------- executor.execute_stream ---------- */
 
 // executorExecuteStream answers executor.execute_stream.
@@ -137,6 +210,17 @@ func executorExecuteStream(request []byte) ([]byte, error) {
 	req, body, creds, errDecode := decodeExecutorRequest(request)
 	if errDecode != nil {
 		return errorEnvelope("invalid_executor_request", errDecode.Error(), 400), nil
+	}
+
+	// Images with stream=true arrive here too: the host routes them through its
+	// streaming image path. The body still produces one result, so it is answered
+	// with that result in the images shape and a single terminal frame.
+	if detectRequestKind(body) == kindImages {
+		raw, errImages := executeImages(req, body, creds)
+		if errImages != nil {
+			return nil, errImages
+		}
+		return raw, nil
 	}
 
 	chatReq, errParse := parseChatRequest(body)
@@ -434,4 +518,124 @@ func classifyFailure(err error) failureKind {
 	default:
 		return failureTransient
 	}
+}
+
+// videoResults holds completed video URLs by task id so a retrieve can answer.
+//
+// Tinker finishes a generation synchronously — there is no queue to poll — so the
+// create call already has the link. CPA's video protocol is task-based, though: it
+// returns an id and the client then GETs /v1/videos/{id}. Keeping the result lets
+// that GET succeed instead of reporting "still processing" forever.
+var videoResults = struct {
+	sync.Map
+}{}
+
+func rememberVideo(id, url string) {
+	if id == "" {
+		return
+	}
+	videoResults.Store(id, url)
+}
+
+func lookupVideo(id string) string {
+	if value, ok := videoResults.Load(id); ok {
+		if url, isText := value.(string); isText {
+			return url
+		}
+	}
+	return ""
+}
+
+// executeVideo answers a video creation request.
+func executeVideo(req executorRequest, body []byte, creds *tinkerCredentials) ([]byte, error) {
+	videoReq, errParse := parseVideoRequest(body)
+	if errParse != nil {
+		return errorEnvelope("invalid_request", errParse.Error(), 400), nil
+	}
+	prompt := strings.TrimSpace(videoReq.Prompt)
+	if prompt == "" {
+		return errorEnvelope("invalid_request", "prompt is required", 400), nil
+	}
+
+	modelName := firstNonEmpty(req.Model, videoReq.Model)
+	ref := resolveTool(modelName)
+	if ref.OutputType != "video" {
+		ref = defaultToolForType("video")
+	}
+	prompt = limitPrompt(prompt, ref)
+
+	// A "WxH" size is meaningful for video only as an orientation hint; the tools
+	// take aspect_ratio.
+	inputs := buildToolInputs(ref, prompt, body)
+	if videoReq.Size != "" {
+		if _, has := inputs["aspect_ratio"]; !has {
+			if ratio := aspectRatioFor(ref.ToolID, "", videoReq.Size); ratio != "" {
+				inputs["aspect_ratio"] = ratio
+			}
+		}
+	}
+	if videoReq.Seconds != "" {
+		if _, has := inputs["duration"]; !has {
+			if d := durationFrom(ref.ToolID, json.RawMessage(`"`+videoReq.Seconds+`"`)); d > 0 {
+				inputs["duration"] = d
+			}
+		}
+	}
+
+	started := time.Now()
+	result, used, errRun := runWithAccount(nil, creds, req.AuthID, ref, inputs)
+	if errRun != nil {
+		state.logs.add(callEntry{
+			Account:  creds.label(),
+			Model:    ref.OpenAI,
+			Tool:     ref.ToolID,
+			Status:   "error",
+			Duration: time.Since(started).Milliseconds(),
+			Detail:   errRun.Error(),
+		})
+		return errorEnvelope("upstream_error", errRun.Error(), httpStatusOf(errRun)), nil
+	}
+
+	url := extractMediaURL(result.Artifact)
+	if url == "" {
+		return errorEnvelope("empty_result", "生成完成但没有返回视频", 502), nil
+	}
+
+	state.logs.add(callEntry{
+		Account:  used.label(),
+		Model:    ref.OpenAI,
+		Tool:     ref.ToolID,
+		Status:   "ok",
+		Duration: time.Since(started).Milliseconds(),
+	})
+
+	taskID := result.ArtifactID
+	rememberVideo(taskID, url)
+
+	return okEnvelope(pluginapi.ExecutorResponse{
+		Payload: videoCreateResponse(taskID, ref.OpenAI, prompt, videoReq.Seconds, videoReq.Size),
+		Headers: http.Header{"Content-Type": []string{"application/json"}},
+	})
+}
+
+// executeVideoRetrieve answers a video status lookup from the stored result.
+func executeVideoRetrieve(body []byte) ([]byte, error) {
+	var probe struct {
+		RequestID string `json:"request_id"`
+		ID        string `json:"id"`
+	}
+	if errUnmarshal := json.Unmarshal(body, &probe); errUnmarshal != nil {
+		return errorEnvelope("invalid_request", errUnmarshal.Error(), 400), nil
+	}
+	id := firstNonEmpty(probe.RequestID, probe.ID)
+	url := lookupVideo(id)
+	if url == "" {
+		// Unknown id: report a failure rather than an eternal "queued" that no
+		// client can ever resolve.
+		return errorEnvelope("not_found", "找不到该视频任务（插件重启后任务记录会丢失，请重新生成）", 404), nil
+	}
+	return okEnvelope(pluginapi.ExecutorResponse{
+		Payload: videoRetrieveResponse(id, url),
+		Headers: http.Header{"Content-Type": []string{"application/json"}},
+	})
 }

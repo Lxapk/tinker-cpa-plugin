@@ -134,11 +134,12 @@ func buildRegistration() registration {
 			ModelRouter:    true,
 			Executor:       true,
 			ExecutorModelScope: string(pluginapi.ExecutorModelScopeBoth),
-			// Tinker speaks OpenAI chat-completions on the way in; the executor
-			// builds the OpenAI-shaped response itself, so both directions stay
-			// in that format.
-			ExecutorInputFormats:  []string{"chat-completions"},
-			ExecutorOutputFormats: []string{"chat-completions"},
+			// Both OpenAI surfaces are accepted, because the plugin answers them
+			// differently: chat completions for conversation, images generations
+			// for the image endpoint. The format names are what the host matches on
+			// when deciding whether this executor may serve a request.
+			ExecutorInputFormats:  []string{"chat-completions", "openai-image", "images", "openai-video"},
+			ExecutorOutputFormats: []string{"chat-completions", "openai-image", "images", "openai-video"},
 			Scheduler:             true,
 		},
 	}

@@ -185,8 +185,9 @@ func main() {
 	if models.Provider != "tinker" {
 		die("model provider = %q", models.Provider)
 	}
-	if len(models.Models) != 12 {
-		die("expected 12 models, got %d", len(models.Models))
+	// 12 real tools plus the whitelisted video aliases.
+	if len(models.Models) < 12 {
+		die("expected at least 12 models, got %d", len(models.Models))
 	}
 	counts := map[string]int{}
 	for _, m := range models.Models {

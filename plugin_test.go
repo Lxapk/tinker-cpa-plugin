@@ -12,10 +12,15 @@ func TestToolCatalogueIsComplete(t *testing.T) {
 	// missing entry means a model the app offers is unreachable through CPA.
 	counts := map[string]int{}
 	for _, ref := range toolCatalogue {
-		counts[ref.OutputType]++
 		if ref.OpenAI == "" || ref.ToolID == "" {
 			t.Fatalf("工具条目缺少标识: %+v", ref)
 		}
+		// Aliases exist so CPA's hard-coded endpoint whitelists accept a name;
+		// they are not additional tools.
+		if ref.Alias {
+			continue
+		}
+		counts[ref.OutputType]++
 	}
 	want := map[string]int{"text": 4, "image": 4, "video": 4}
 	for kind, expected := range want {
@@ -711,5 +716,95 @@ func TestVideoRatiosFitToolEnum(t *testing.T) {
 	// Veo only offers 9:16 / 16:9; a landscape 21:9 has to fall back to 16:9.
 	if inputs["aspect_ratio"] != "16:9" {
 		t.Errorf("Veo 只接受 9:16/16:9，21:9 应回落到 16:9，得到 %v", inputs["aspect_ratio"])
+	}
+}
+
+// TestRequestShapeDetection guards the branch that lets one executor serve three
+// OpenAI endpoints: chat, images and video all arrive at the same handler.
+func TestRequestShapeDetection(t *testing.T) {
+	chat := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":"hi"}]}`)
+	if detectRequestKind(chat) != kindChat {
+		t.Error("messages 应识别为 chat")
+	}
+
+	images := []byte(`{"model":"flux-image","prompt":"a cat"}`)
+	if detectRequestKind(images) != kindImages {
+		t.Error("只有 prompt 应识别为 images")
+	}
+
+	if isVideoCreate(executorRequest{}, []byte(`{"model":"grok-imagine-video","prompt":"waves"}`)) != true {
+		t.Error("grok-imagine-video 应识别为视频")
+	}
+	if isVideoCreate(executorRequest{}, []byte(`{"model":"flux-image","prompt":"a cat"}`)) {
+		t.Error("图片模型不应识别为视频")
+	}
+	if isVideoCreate(executorRequest{}, []byte(`{"model":"veo-video","prompt":"waves"}`)) != true {
+		t.Error("veo-video 应识别为视频")
+	}
+
+	if !isVideoRetrieve([]byte(`{"request_id":"gid://api/Artifact/1"}`)) {
+		t.Error("只有 request_id 应识别为检索")
+	}
+	if isVideoRetrieve([]byte(`{"request_id":"x","prompt":"y"}`)) {
+		t.Error("带 prompt 的不是检索")
+	}
+}
+
+// TestVideoAliasesPassCPAWhitelist records why the alias names exist: CPA's video
+// endpoints accept only its own hard-coded list, so a Tinker tool name is rejected
+// before the request reaches this plugin.
+func TestVideoAliasesPassCPAWhitelist(t *testing.T) {
+	// The names CPA's isXAIVideosModel / isSoraVideosModel accept.
+	whitelisted := []string{
+		"grok-imagine-video",
+		"grok-imagine-video-1.5",
+		"sora-2",
+	}
+	for _, name := range whitelisted {
+		if !isVideoModelName(name) {
+			t.Errorf("%q 应被识别为视频模型", name)
+		}
+	}
+
+	// Each alias must resolve to a real Tinker video tool.
+	for _, ref := range toolCatalogue {
+		if !ref.Alias {
+			continue
+		}
+		if ref.OutputType != "video" {
+			t.Errorf("别名 %q 应为视频工具", ref.OpenAI)
+		}
+		resolved := resolveTool(ref.OpenAI)
+		if resolved.ToolID != ref.ToolID {
+			t.Errorf("别名 %q 应解析到 %q，得到 %q", ref.OpenAI, ref.ToolID, resolved.ToolID)
+		}
+	}
+}
+
+// TestImagesAndVideoResponsesUseTheirOwnShape: an images client cannot parse a
+// chat.completion, and a video client needs a task id.
+func TestImagesAndVideoResponsesUseTheirOwnShape(t *testing.T) {
+	var images struct {
+		Created int64 `json:"created"`
+		Data    []struct {
+			URL string `json:"url"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(imagesResponseBody([]string{"https://x/y.png"}, "url"), &images); err != nil {
+		t.Fatalf("images 响应不是合法 JSON: %v", err)
+	}
+	if len(images.Data) != 1 || images.Data[0].URL != "https://x/y.png" {
+		t.Errorf("images data 不正确: %+v", images.Data)
+	}
+
+	var video struct {
+		RequestID string `json:"request_id"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal(videoCreateResponse("task-1", "grok-imagine-video", "p", "6", "720x1280"), &video); err != nil {
+		t.Fatalf("视频响应不是合法 JSON: %v", err)
+	}
+	if video.RequestID != "task-1" {
+		t.Errorf("视频响应应带 request_id，得到 %q", video.RequestID)
 	}
 }

@@ -6,8 +6,8 @@
       "name": "Tinker",
       "description": "把 Tinker 账号反代为 CPA 的 OpenAI 兼容接口：12 个工具（文本/图片/视频）、多账号轮换与自动续期，支持账号启用禁用。",
       "author": "Lxapk",
-      "version": "0.2.9",
-      "release_tag": "v0.2.9",
+      "version": "0.3.0",
+      "release_tag": "v0.3.0",
       "repository": "https://github.com/Lxapk/tinker-cpa-plugin",
       "license": "MIT",
       "install": {

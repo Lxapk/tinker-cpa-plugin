@@ -52,7 +52,12 @@ func catalogueModels() []pluginapi.ModelInfo {
 		}
 		switch ref.OutputType {
 		case "image":
-			info.Type = "image"
+			// "openai-image" is the marker CPA's own images endpoint checks:
+			// isOpenAICompatImagesModel() accepts a model whose registry Type is
+			// registry.OpenAIImageModelType, which is this exact string. Anything
+			// else — "image" included — is rejected before the request reaches the
+			// plugin, with the "not supported on /v1/images/generations" error.
+			info.Type = "openai-image"
 			info.SupportedOutputModalities = []string{"image"}
 			info.SupportedInputModalities = []string{"text"}
 		case "video":
