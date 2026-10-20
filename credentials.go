@@ -280,3 +280,25 @@ func claimInt64(token string, names ...string) int64 {
 	}
 	return 0
 }
+
+// refreshIntervalSeconds is the cadence CPA should use for this credential.
+//
+// Tinker's access token is short-lived (about 15 minutes), so CPA has to re-check
+// often. The value is capped at the token's remaining lifetime so a credential is
+// refreshed at expiry rather than on a fixed clock far ahead of it — matching the
+// official app, which refreshes only once the server rejects a request.
+func (c *tinkerCredentials) refreshIntervalSeconds() int {
+	const fallback = 600
+	if c == nil || c.ExpiresAt <= 0 {
+		return fallback
+	}
+	remaining := time.Until(time.Unix(c.ExpiresAt, 0)).Seconds()
+	if remaining <= 0 {
+		// Already expired: refresh now.
+		return 1
+	}
+	if int(remaining) < fallback {
+		return int(remaining)
+	}
+	return fallback
+}

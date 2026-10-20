@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -878,3 +879,95 @@ func TestFormatExt(t *testing.T) {
 		}
 	}
 }
+
+// TestNextRefreshAfterIsExpiry pins the scheduling contract: CPA refreshes at the
+// token's expiry, never ahead of it.
+//
+// A lead time (the old refresh_skew_seconds: 120) made CPA refresh on a fixed
+// schedule, which spends Tinker's single-use refresh token far more often than the
+// credential needs and widens the window where two refreshes race. The official app
+// refreshes only after a 401.
+func TestNextRefreshAfterIsExpiry(t *testing.T) {
+	expiry := int64(1792505628)
+	creds := &tinkerCredentials{
+		AccessToken: "token-abcdefghijklmnop",
+		Email:       "user@example.com",
+		ExpiresAt:   expiry,
+	}
+	auth := tinkerAuthData(creds, "")
+
+	if auth.NextRefreshAfter.IsZero() {
+		t.Fatal("应设置 NextRefreshAfter")
+	}
+	if got := auth.NextRefreshAfter.Unix(); got != expiry {
+		t.Errorf("NextRefreshAfter = %d, 期望等于到期时间 %d（不应提前）", got, expiry)
+	}
+}
+
+// TestNoScheduledRefreshInPlugin: the plugin must not carry its own refresh timer
+// or skew. Refreshing is CPA's job; a second trigger would race it for the
+// single-use token.
+func TestNoScheduledRefreshInPlugin(t *testing.T) {
+	cfg := defaultSettings()
+	if cfg.RefreshSkewSeconds != 0 {
+		t.Errorf("默认刷新提前量应为 0，得到 %d", cfg.RefreshSkewSeconds)
+	}
+}
+
+// TestOnlyAuthRefreshCallsUpstream records where refreshing happens. The single
+// call site is auth.refresh, which CPA invokes; there must be no path that
+// refreshes during a generation.
+func TestOnlyAuthRefreshCallsUpstream(t *testing.T) {
+	src, err := os.ReadFile("auth_provider.go")
+	if err != nil {
+		t.Skip("源码不可读")
+	}
+	if !strings.Contains(string(src), "upstream.refresh") {
+		t.Error("auth.refresh 应调用上游刷新")
+	}
+	exec, errExec := os.ReadFile("executor.go")
+	if errExec != nil {
+		t.Skip("executor.go 不可读")
+	}
+	if strings.Contains(string(exec), "upstream.refresh") {
+		t.Error("执行器不应调用上游刷新——那会与 CPA 抢一次性 refresh token")
+	}
+}
+
+// TestAuthDataDeclaresRefreshInterval guards the field whose absence made every
+// account silently expire.
+//
+// CPA's auto-refresh loop asks ProviderRefreshLead(provider, runtime) for
+// permission to schedule anything. A plugin provider has no registered lead
+// factory, so the answer is nil — "never refresh" — unless the credential carries
+// refresh_interval_seconds. That one field is what makes CPA look after the token.
+func TestAuthDataDeclaresRefreshInterval(t *testing.T) {
+	creds := &tinkerCredentials{
+		AccessToken: "token-abcdefghijklmnop",
+		Email:       "user@example.com",
+		ExpiresAt:   timeUnixNow() + 900,
+	}
+	auth := tinkerAuthData(creds, "")
+
+	raw, ok := auth.Metadata["refresh_interval_seconds"]
+	if !ok {
+		t.Fatal("缺少 refresh_interval_seconds：CPA 不会刷新该账号")
+	}
+	interval, isInt := raw.(int)
+	if !isInt || interval <= 0 {
+		t.Fatalf("refresh_interval_seconds 应为正整数，得到 %#v", raw)
+	}
+	// Capped at the token's remaining lifetime, so the refresh lands at expiry.
+	if interval > 900 {
+		t.Errorf("间隔不应超过 token 剩余寿命，得到 %d", interval)
+	}
+
+	// An already-expired credential asks for an immediate refresh.
+	expired := &tinkerCredentials{Email: "e@x.y", ExpiresAt: timeUnixNow() - 60}
+	if got := expired.refreshIntervalSeconds(); got != 1 {
+		t.Errorf("已过期凭据应返回 1 秒，得到 %d", got)
+	}
+}
+
+// timeUnixNow is a small helper so the test reads clearly.
+func timeUnixNow() int64 { return nowUnix() }

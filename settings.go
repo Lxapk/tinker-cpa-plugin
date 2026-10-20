@@ -10,7 +10,9 @@ import (
 
 // pluginSettings is what an operator can tune under plugins.configs.tinker.
 type pluginSettings struct {
-	// RefreshSkewSeconds is how far ahead of expiry credentials are refreshed.
+	// RefreshSkewSeconds is retained so an existing config file still parses. It
+	// is no longer used: CPA refreshes at the token's expiry, matching the
+	// official app's behaviour, so there is no lead time to configure.
 	RefreshSkewSeconds int64 `json:"refresh_skew_seconds" yaml:"refresh_skew_seconds"`
 	// PollIntervalMillis is how often a running generation is polled.
 	PollIntervalMillis int64 `json:"poll_interval_millis" yaml:"poll_interval_millis"`
@@ -58,7 +60,7 @@ func defaultSettings() pluginSettings {
 		// single-use, so the skew must stay well under the token lifetime. A skew
 		// longer than the lifetime would make every call attempt a refresh, burn
 		// the one-shot refresh token, and turn a working account into a dead one.
-		RefreshSkewSeconds:       120,
+		RefreshSkewSeconds:       0,
 		PollIntervalMillis:       2000,
 		GenerationTimeoutSeconds: 600,
 		ImagePromptLimit:         3900,
@@ -118,9 +120,6 @@ func (s *settingsStore) decodeLifecycleConfig(raw []byte) error {
 // timeout or poll interval would break the poll loop outright.
 func (c *pluginSettings) applyDefaults() {
 	def := defaultSettings()
-	if c.RefreshSkewSeconds <= 0 {
-		c.RefreshSkewSeconds = def.RefreshSkewSeconds
-	}
 	if c.PollIntervalMillis <= 0 {
 		c.PollIntervalMillis = def.PollIntervalMillis
 	}

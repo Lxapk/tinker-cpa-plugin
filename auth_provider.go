@@ -83,17 +83,30 @@ func tinkerAuthData(creds *tinkerCredentials, fileName string) pluginapi.AuthDat
 		Metadata: map[string]any{
 			"email":      creds.Email,
 			"account_id": creds.AccountID,
+			// Without this, CPA never refreshes a tinker credential.
+			//
+			// The auto-refresh loop asks ProviderRefreshLead(provider, runtime)
+			// whether it may schedule a refresh at all, and a provider with no
+			// registered lead and no refresh_interval_seconds answers "no" — every
+			// tinker account silently expired. This metadata is the supported way
+			// for a plugin to declare its own cadence.
+			"refresh_interval_seconds": creds.refreshIntervalSeconds(),
 		},
 		Attributes: map[string]string{tinkerProviderKey + "-uid": creds.accountKey()},
 	}
 	if auth.FileName == "" {
 		auth.FileName = credsFileName(creds)
 	}
-	// Tell the host when this credential will need a refresh so the pool does
-	// not have to guess from an opaque storage blob.
+	// Tell the host when this credential will need a refresh. The value is the
+	// token's own expiry: no lead time.
+	//
+	// Tinker's refresh token is single-use, and the official app only refreshes
+	// *after* a request comes back 401 — it never refreshes ahead of expiry. A
+	// lead time here made CPA refresh on a fixed schedule instead, which spends
+	// the one-shot refresh token far more often than the credential needs and
+	// widens the window where two refreshes race for the same token.
 	if creds.ExpiresAt > 0 {
-		auth.NextRefreshAfter = time.Unix(creds.ExpiresAt, 0).
-			Add(-time.Duration(state.settings.get().RefreshSkewSeconds) * time.Second)
+		auth.NextRefreshAfter = time.Unix(creds.ExpiresAt, 0)
 	}
 	return auth
 }
@@ -215,9 +228,16 @@ func withToken(_ context.Context, creds *tinkerCredentials, _ string) (*tinkerCr
 
 // authRefresh answers auth.refresh.
 //
-// Tinker's access token lives 15 minutes, so this runs often. A refresh needs
-// the current access token in Authorization even after it expired; the client
-// handles that, and here the only job is to persist the new pair.
+// CPA decides when to call this; the plugin never refreshes on its own. That
+// split follows the official app, which also refreshes only when the server
+// rejects a request — never ahead of expiry.
+//
+// Two details matter:
+//
+//   - Tinker requires the *current* access token in Authorization even after it
+//     expired; the client sends it.
+//   - The refresh token is single-use, so the new pair must be returned rather
+//     than written anywhere: the host is the only writer of the auth store.
 func authRefresh(request []byte) ([]byte, error) {
 	var req pluginapi.AuthRefreshRequest
 	if len(request) > 0 {
@@ -254,13 +274,16 @@ func authRefresh(request []byte) ([]byte, error) {
 	key := creds.accountKey()
 	state.accounts.clearAuthRejected(key)
 	state.accounts.observe(next, req.AuthID)
-	// The host persists what this call returns, but writing through keeps the
-	// file correct even when the host's own save path is unavailable.
-	persistRefreshedCredential(req.AuthID, next)
+	// The host persists what this call returns, and that is the only writer.
+	//
+	// Writing the file here as well raced the host: both wrote the rotated pair,
+	// and whichever finished second could put back a stale snapshot. CPA owns the
+	// credential store, so the plugin returns the new pair and stops there.
 
 	return okEnvelope(pluginapi.AuthRefreshResponse{
 		Auth:             tinkerAuthData(next, ""),
-		NextRefreshAfter: time.Unix(next.ExpiresAt, 0).Add(-time.Duration(state.settings.get().RefreshSkewSeconds) * time.Second),
+		// Expiry, not expiry-minus-a-skew: see the note on tinkerAuthData.
+		NextRefreshAfter: time.Unix(next.ExpiresAt, 0),
 	})
 }
 
