@@ -39,6 +39,17 @@ type pluginSettings struct {
 	DefaultModel string `json:"default_model" yaml:"default_model"`
 	// Debug enables verbose host logging.
 	Debug bool `json:"debug" yaml:"debug"`
+	// Routing decides how a model call picks an account.
+	Routing routingSettings `json:"routing" yaml:"routing"`
+}
+
+// routingSettings controls how the plugin spreads requests over its accounts.
+type routingSettings struct {
+	// Strategy is one of round_robin / fill_first / random / by_usage.
+	Strategy string `json:"strategy" yaml:"strategy"`
+	// CooldownSeconds is the minimum gap between two switches of the same
+	// account, so a burst of requests does not thrash across the pool.
+	CooldownSeconds int `json:"cooldown_seconds" yaml:"cooldown_seconds"`
 }
 
 func defaultSettings() pluginSettings {
@@ -58,6 +69,10 @@ func defaultSettings() pluginSettings {
 		ErrorThreshold:           3,
 		LogRetentionDays:         30,
 		DefaultModel:             "claude-opus-4-8",
+		Routing: routingSettings{
+			Strategy:        routingRoundRobin,
+			CooldownSeconds: 0,
+		},
 	}
 }
 

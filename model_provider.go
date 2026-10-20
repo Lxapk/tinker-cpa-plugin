@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -67,64 +66,6 @@ func catalogueModels() []pluginapi.ModelInfo {
 		out = append(out, info)
 	}
 	return out
-}
-
-/* ---------- scheduler ---------- */
-
-// schedulerPick answers scheduler.pick.
-//
-// The host hands over the candidates it considers eligible. Returning Handled
-// with an AuthID pins one; returning Handled=false defers to the host's own
-// round-robin. The plugin pins a credential only when it has a concrete
-// preference, so the host's ordering stays in charge the rest of the time:
-//
-//   - credentials the operator disabled or the upstream blocked are skipped;
-//   - credentials inside a cooldown are skipped;
-//   - among the rest, the least recently used wins, which spreads load across
-//     accounts instead of hammering the first one.
-func schedulerPick(request []byte) ([]byte, error) {
-	var req pluginapi.SchedulerPickRequest
-	if len(request) > 0 {
-		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
-			return nil, errUnmarshal
-		}
-	}
-
-	best := ""
-	bestUsed := int64(-1)
-	for _, candidate := range req.Candidates {
-		if !candidateMatches(candidate) {
-			continue
-		}
-		key := candidateKey(candidate)
-		record := state.accounts.lookup(key, candidate.ID)
-		if record != nil {
-			if record.Disabled || record.Blocked {
-				continue
-			}
-			if record.CooldownUntil > nowUnixMilli() {
-				continue
-			}
-			if best == "" || (record.LastUsed < bestUsed || bestUsed < 0) {
-				best = candidate.ID
-				bestUsed = record.LastUsed
-			}
-			continue
-		}
-		// A candidate the plugin has never seen is still usable; prefer it over
-		// nothing so a freshly added account is not ignored until first use.
-		if best == "" {
-			best = candidate.ID
-			bestUsed = 0
-		}
-	}
-
-	if best == "" {
-		// Everything is filtered out. Defer to the host so it can surface its own
-		// "no available auth" error rather than a plugin-specific one.
-		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
-	}
-	return okEnvelope(pluginapi.SchedulerPickResponse{AuthID: best, Handled: true})
 }
 
 // candidateMatches keeps only this provider's candidates.

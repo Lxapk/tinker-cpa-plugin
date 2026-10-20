@@ -43,6 +43,13 @@ type accountRecord struct {
 	CooldownUntil int64  `json:"cooldown_until,omitempty"`
 	LastUsed      int64  `json:"last_used,omitempty"`
 	AddedAt       int64  `json:"added_at,omitempty"`
+	// CallCount feeds the by_usage strategy and the panel's statistics.
+	CallCount int64 `json:"call_count,omitempty"`
+	// SuccessCount and FailureCount split CallCount for the panel.
+	SuccessCount int64 `json:"success_count,omitempty"`
+	FailureCount int64 `json:"failure_count,omitempty"`
+	// ExpiresAt mirrors the credential's token expiry, shown in the account table.
+	ExpiresAt int64 `json:"expires_at,omitempty"`
 }
 
 func newAccountStore() *accountStore {
@@ -132,6 +139,9 @@ func (s *accountStore) observe(creds *tinkerCredentials, authIndex string) {
 	if authIndex != "" {
 		record.AuthIndex = authIndex
 	}
+	if creds.ExpiresAt > 0 {
+		record.ExpiresAt = creds.ExpiresAt
+	}
 	s.mu.Unlock()
 	s.save(state.settings.dataDir())
 }
@@ -144,6 +154,8 @@ func (s *accountStore) markUsed(key string) {
 		record.Failures = 0
 		record.LastError = ""
 		record.CooldownUntil = 0
+		record.CallCount++
+		record.SuccessCount++
 	}
 	s.mu.Unlock()
 	s.save(state.settings.dataDir())
@@ -159,6 +171,8 @@ func (s *accountStore) markFailure(key, reason string, hard bool) {
 		s.items[key] = record
 	}
 	record.Failures++
+	record.CallCount++
+	record.FailureCount++
 	record.LastError = reason
 	if hard {
 		record.CooldownUntil = time.Now().UnixMilli() + cfg.CooldownMillis

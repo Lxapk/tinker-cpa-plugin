@@ -46,6 +46,10 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodGet, Path: "/tinker/status", Description: "插件运行状态与账号汇总。"},
 			{Method: http.MethodGet, Path: "/tinker/models", Description: "Tinker 工具目录。"},
 			{Method: http.MethodGet, Path: "/tinker/calls", Description: "最近的调用记录。"},
+			{Method: http.MethodGet, Path: "/tinker/routing/status", Description: "当前路由策略与轮巡位置。"},
+			{Method: http.MethodPost, Path: "/tinker/routing/config", Description: "设置路由策略。"},
+			{Method: http.MethodPost, Path: "/tinker/routing/reset", Description: "重置轮巡位置。"},
+			{Method: http.MethodPost, Path: "/tinker/login/new", Description: "创建一个新的登录会话并返回表单地址。"},
 			{Method: http.MethodPost, Path: "/tinker/calls/clear", Description: "清空调用记录。"},
 		},
 	}
@@ -174,6 +178,26 @@ func handleManagement(request []byte) ([]byte, error) {
 
 	case path == "/tinker/calls" && method == http.MethodGet:
 		return jsonManagementResponse(map[string]any{"calls": state.logs.recent(100)})
+
+	case path == "/tinker/routing/status" && method == http.MethodGet:
+		return jsonManagementResponse(routingPanelPayload())
+
+	case path == "/tinker/routing/config" && method == http.MethodPost:
+		body := decodeManagementBody(req.Body)
+		strategy := firstNonEmpty(stringFrom(body, "strategy"), stringFrom(body, "value"))
+		if strategy == "" {
+			return errorManagementResponse(http.StatusBadRequest, "缺少 strategy")
+		}
+		result := applyRoutingConfig(strategy)
+		result["hint"] = routingNextHint()
+		return jsonManagementResponse(result)
+
+	case path == "/tinker/routing/reset" && method == http.MethodPost:
+		resetRotation()
+		return jsonManagementResponse(map[string]any{"ok": true})
+
+	case path == "/tinker/login/new" && method == http.MethodPost:
+		return rawManagementResponse(newLoginSession())
 
 	case path == "/tinker/calls/clear" && method == http.MethodPost:
 		state.logs.clear()
@@ -451,199 +475,12 @@ func formatUnixMilli(ms int64) string {
 
 // pageHTML is the resource page CPA renders for this plugin.
 //
-// It is deliberately a single self-contained page: CPA serves it from
-// /v0/resource/plugins/<id>/home, and every number it shows comes from the JSON
-// routes above, so the panel and the API can never disagree.
+// The document itself lives in main_page.go; this keeps the historical entry
+// point so the resource route does not have to know that.
 func pageHTML() string {
-	return fmt.Sprintf(`<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Tinker</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-         background:#f6f6f7; color:#1d1d1f; }
-  header { padding:20px 18px 12px; background:#fff; border-bottom:1px solid #e6e6e8; }
-  h1 { margin:0 0 4px; font-size:19px; }
-  .sub { color:#6e6e73; font-size:13px; }
-  .cards { display:flex; gap:10px; padding:14px 18px; flex-wrap:wrap; }
-  .card { flex:1 1 96px; background:#fff; border:1px solid #e6e6e8; border-radius:12px; padding:12px; }
-  .card b { display:block; font-size:20px; }
-  .card span { color:#6e6e73; font-size:12px; }
-  section { padding:0 18px 24px; }
-  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:#6e6e73; margin:18px 0 8px; }
-  .row { display:flex; align-items:center; gap:12px; background:#fff; border:1px solid #e6e6e8;
-         border-radius:12px; padding:12px; margin-bottom:8px; }
-  .row .who { flex:1; min-width:0; }
-  .row .mail { font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .row .meta { color:#6e6e73; font-size:12px; margin-top:2px; }
-  .pill { font-size:11px; padding:2px 8px; border-radius:999px; }
-  .on { background:#e3f6e5; color:#1a7f37; }
-  .off { background:#fdeaea; color:#c62828; }
-  button { border:1px solid #d2d2d7; background:#fff; border-radius:8px; padding:6px 12px;
-           font-size:13px; cursor:pointer; }
-  button:hover { background:#f0f0f2; }
-  table { width:100%%; border-collapse:collapse; font-size:13px; }
-  th,td { text-align:left; padding:8px 6px; border-bottom:1px solid #ececee; }
-  th { color:#6e6e73; font-weight:500; font-size:12px; }
-  .err { color:#c62828; }
-  .empty { color:#6e6e73; font-size:13px; padding:12px; }
-  .keyrow { display:flex; gap:8px; margin-top:10px; }
-  .keyrow input { flex:1; min-width:0; border:1px solid #d2d2d7; border-radius:8px;
-                  padding:7px 10px; font-size:13px; background:transparent; color:inherit; }
-  .keyhint { font-size:12px; margin-top:6px; color:#6e6e73; }
-  .keyhint.bad { color:#c62828; }
-  .keyhint.ok { color:#1a7f37; }
-  @media (prefers-color-scheme: dark) {
-    body { background:#121212; color:#f2f2f2; }
-    header,.card,.row { background:#1c1c1e; border-color:#2c2c2e; }
-    button { background:#1c1c1e; color:#f2f2f2; border-color:#3a3a3c; }
-    th,td { border-color:#2c2c2e; }
-  }
-</style>
-</head>
-<body>
-<header>
-  <h1>Tinker</h1>
-  <div class="sub" id="sub">加载中…</div>
-  <div class="keyrow">
-    <input id="mgmtKey" type="password" placeholder="CPA 管理密钥" autocomplete="off" />
-    <button onclick="saveKey()">保存</button>
-    <button onclick="clearKey()">清除</button>
-  </div>
-  <div class="keyhint" id="keyState"></div>
-</header>
-<div class="cards">
-  <div class="card"><b id="c-total">-</b><span>账号</span></div>
-  <div class="card"><b id="c-enabled">-</b><span>启用</span></div>
-  <div class="card"><b id="c-models">-</b><span>模型</span></div>
-</div>
-<section>
-  <h2>账号</h2>
-  <div id="accounts"><div class="empty">加载中…</div></div>
-</section>
-<section>
-  <h2>最近调用</h2>
-  <div id="calls"><div class="empty">加载中…</div></div>
-</section>
-<script>
-// The management API always requires the CPA management key. The control panel
-// keeps it in its own storage, which a plugin page cannot read, so the operator
-// pastes it once and it is remembered locally.
-const base = "/v0/management";
-const KEY_NAME = "tinker.mgmtKey";
-function key() {
-  try { return (localStorage.getItem(KEY_NAME) || "").trim(); } catch (e) { return ""; }
+	return renderMainPage()
 }
-function setKeyState(text, cls) {
-  const el = document.getElementById("keyState");
-  if (!el) return;
-  el.textContent = text;
-  el.className = "keyhint" + (cls ? " " + cls : "");
-}
-window.saveKey = function () {
-  const input = document.getElementById("mgmtKey");
-  const value = (input && input.value || "").trim();
-  if (!value) { setKeyState("请输入密钥", "bad"); return; }
-  try { localStorage.setItem(KEY_NAME, value); } catch (e) { setKeyState("浏览器拒绝保存", "bad"); return; }
-  if (input) input.value = "";
-  refreshKeyState();
-  location.reload();
-};
-window.clearKey = function () {
-  try { localStorage.removeItem(KEY_NAME); } catch (e) {}
-  refreshKeyState();
-  location.reload();
-};
-function refreshKeyState() {
-  const k = key();
-  if (k) setKeyState("已保存管理密钥（" + k.length + " 字符）", "ok");
-  else setKeyState("尚未保存密钥：在 CPA 配置的 remote-management.secret-key 里查看，填入上方输入框。", "warn");
-}
-async function api(path, opts) {
-  const k = key();
-  if (!k) throw new Error("请先填入 CPA 管理密钥");
-  const options = opts || {};
-  options.headers = Object.assign({
-    "Content-Type": "application/json",
-    "Authorization": "Bearer " + k,
-    "X-Management-Key": k
-  }, options.headers || {});
-  const resp = await fetch(base + path, options);
-  const text = await resp.text();
-  let body = null;
-  try { body = JSON.parse(text); } catch (e) {}
-  if (!resp.ok) {
-    const msg = (body && (body.error || body.message)) || ("HTTP " + resp.status);
-    throw new Error(String(msg));
-  }
-  if (!body || !body.ok) throw new Error((body && body.error && body.error.message) || "请求失败");
-  return body.result;
-}
-function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-async function loadStatus() {
-  const st = await api("/tinker/status");
-  document.getElementById("sub").textContent = st.name + " · " + st.version + " · " + st.upstream;
-  document.getElementById("c-total").textContent = st.accounts;
-  document.getElementById("c-enabled").textContent = st.enabled;
-  document.getElementById("c-models").textContent = st.models;
-}
-async function loadAccounts() {
-  const data = await api("/tinker/accounts");
-  const host = document.getElementById("accounts");
-  if (!data.accounts.length) { host.innerHTML = '<div class="empty">还没有账号。在 CPA 的登录页用 Tinker 邮箱登录。</div>'; return; }
-  host.innerHTML = data.accounts.map(a => {
-    const on = !a.disabled;
-    const flags = [];
-    if (a.blocked) flags.push('<span class="pill off">需重新登录</span>');
-    if (a.orphaned) flags.push('<span class="pill off">文件已删除</span>');
-    return '<div class="row">' +
-      '<div class="who"><div class="mail">' + esc(a.email || a.key) + '</div>' +
-      '<div class="meta">' + (a.last_used ? '最近使用 ' + esc(a.last_used) : '尚未使用') +
-        (a.last_error ? ' · <span class="err">' + esc(a.last_error) + '</span>' : '') + '</div></div>' +
-      flags.join('') +
-      '<span class="pill ' + (on ? 'on' : 'off') + '">' + (on ? '已启用' : '已禁用') + '</span>' +
-      '<button data-key="' + esc(a.key) + '" data-disabled="' + (on ? "true" : "false") + '">' + (on ? '禁用' : '启用') + '</button>' +
-      '</div>';
-  }).join("");
-  host.querySelectorAll("button").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      try {
-        await api("/tinker/account/toggle", {method:"POST", body: JSON.stringify({
-          key: btn.dataset.key, disabled: btn.dataset.disabled === "true" })});
-        await Promise.all([loadStatus(), loadAccounts()]);
-      } catch (e) { alert(e.message); btn.disabled = false; }
-    });
-  });
-}
-async function loadCalls() {
-  const data = await api("/tinker/calls");
-  const host = document.getElementById("calls");
-  if (!data.calls.length) { host.innerHTML = '<div class="empty">还没有调用记录。</div>'; return; }
-  host.innerHTML = '<table><thead><tr><th>时间</th><th>账号</th><th>模型</th><th>状态</th><th>耗时</th></tr></thead><tbody>' +
-    data.calls.map(c => '<tr><td>' + esc(c.time) + '</td><td>' + esc(c.account) + '</td><td>' + esc(c.model) +
-      '</td><td class="' + (c.status === 'ok' ? '' : 'err') + '">' + esc(c.status) +
-      '</td><td>' + (c.duration_ms || 0) + 'ms</td></tr>').join("") +
-    '</tbody></table>';
-}
-(async () => {
-  refreshKeyState();
-  if (!key()) {
-    document.getElementById("sub").textContent = "请先填入 CPA 管理密钥";
-    document.getElementById("accounts").innerHTML = '<div class="empty">填入管理密钥后显示账号。</div>';
-    document.getElementById("calls").innerHTML = '<div class="empty">填入管理密钥后显示调用记录。</div>';
-    return;
-  }
-  try { await Promise.all([loadStatus(), loadAccounts(), loadCalls()]); }
-  catch (e) { document.getElementById("sub").textContent = "加载失败：" + e.message; }
-})();
-</script>
-</body>
-</html>`)
-}
+
 
 // loginFormHTML is the page the authorisation dialog opens for Tinker.
 //
@@ -807,4 +644,34 @@ if (!state) {
 </script>
 </body>
 </html>`)
+}
+
+// routingPanelPayload is what /tinker/routing/status returns.
+func routingPanelPayload() map[string]any {
+	payload := routingStatusJSON()
+	payload["hint"] = routingNextHint()
+	return payload
+}
+
+// newLoginSession creates a login and returns the form URL the panel navigates to.
+func newLoginSession() ([]byte, error) {
+	raw, err := startLogin(pluginapi.AuthLoginStartRequest{Provider: tinkerProviderKey})
+	if err != nil {
+		return nil, err
+	}
+	// startLogin returns the RPC envelope; unwrap it so the panel sees {url,state}.
+	var env struct {
+		Result struct {
+			URL   string `json:"URL"`
+			State string `json:"State"`
+		} `json:"result"`
+	}
+	if errUnmarshal := json.Unmarshal(raw, &env); errUnmarshal != nil {
+		return nil, errUnmarshal
+	}
+	return json.Marshal(map[string]any{
+		"ok":    true,
+		"url":   env.Result.URL,
+		"state": env.Result.State,
+	})
 }
