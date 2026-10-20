@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -245,16 +244,13 @@ func authLoginStart(request []byte) ([]byte, error) {
 // the origin it is already talking to — and the host's own base is only used
 // when it parses into a clean origin.
 func tokenFormURL(baseURL string) string {
-	const resourcePath = "/v0/resource/plugins/" + pluginName + "/login"
-	base := strings.TrimSpace(baseURL)
-	if base == "" {
-		return resourcePath
-	}
-	parsed, errParse := url.Parse(base)
-	if errParse != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return resourcePath
-	}
-	return parsed.Scheme + "://" + parsed.Host + resourcePath
+	// Always relative. The host builds BaseURL from its own listen address, which
+	// on a server is 127.0.0.1 — an absolute URL handed to a remote browser then
+	// points at the browser's own machine. A relative path is resolved against
+	// whatever origin the panel is being viewed from, which is correct for both
+	// local and remote access.
+	_ = baseURL
+	return "/v0/resource/plugins/" + pluginName + "/login"
 }
 
 /* ---------- auth.login.poll ---------- */

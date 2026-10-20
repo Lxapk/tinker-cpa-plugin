@@ -329,14 +329,17 @@ func TestParseCredentialInputAcceptsWholeAuthFile(t *testing.T) {
 // BaseURL is the full callback URL, and the management path prefix varies between
 // CPA builds, so only scheme+host may be reused.
 func TestTokenFormURLKeepsOnlyOrigin(t *testing.T) {
-	cases := map[string]string{
-		"http://127.0.0.1:8317/v0/management/oauth-callback":  "http://127.0.0.1:8317/v0/resource/plugins/tinker/login",
-		"http://127.0.0.1:8317/v8/management/oauth/callback":  "http://127.0.0.1:8317/v0/resource/plugins/tinker/login",
-		"https://cpa.example.com/v0/management/oauth-callback": "https://cpa.example.com/v0/resource/plugins/tinker/login",
-		"":       "/v0/resource/plugins/tinker/login",
-		"garbage": "/v0/resource/plugins/tinker/login",
+	// Every input yields the same relative path. An absolute URL here would embed
+	// the host's own 127.0.0.1 and break access from a remote browser.
+	want := "/v0/resource/plugins/tinker/login"
+	cases := []string{
+		"http://127.0.0.1:8317/v0/management/oauth-callback",
+		"http://127.0.0.1:8317/v8/management/oauth/callback",
+		"https://cpa.example.com/v0/management/oauth-callback",
+		"",
+		"garbage",
 	}
-	for in, want := range cases {
+	for _, in := range cases {
 		if got := tokenFormURL(in); got != want {
 			t.Errorf("tokenFormURL(%q) = %q, want %q", in, got, want)
 		}
