@@ -236,8 +236,19 @@ func authRefresh(request []byte) ([]byte, error) {
 
 	next, errRefresh := upstream.refresh(ctx, creds)
 	if errRefresh != nil {
-		state.accounts.markBlocked(creds.accountKey(), errRefresh.Error())
-		return nil, fmt.Errorf("刷新失败，请重新登录: %w", errRefresh)
+		// Only a rejection by the server proves the credential is dead.
+		//
+		// Anything else — a timeout, a dropped connection, a 5xx — says nothing
+		// about the account. Marking it blocked on those was what put a freshly
+		// added account into "需重新登录" after one unlucky refresh, and the flag
+		// then outlived the transient cause because only a successful refresh
+		// clears it.
+		var apiErr *apiError
+		if errors.As(errRefresh, &apiErr) && apiErr.isAuthError() {
+			state.accounts.markBlocked(creds.accountKey(), apiErr.Error())
+			return nil, fmt.Errorf("刷新失败，请重新登录: %w", errRefresh)
+		}
+		return nil, fmt.Errorf("刷新暂时失败（网络或上游异常，稍后会自动重试）: %w", errRefresh)
 	}
 
 	key := creds.accountKey()

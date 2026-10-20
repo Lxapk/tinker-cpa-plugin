@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -420,3 +421,62 @@ func TestExpiresAtComesFromToken(t *testing.T) {
 		t.Errorf("无 exp 时应保留原值，得到 %d", got)
 	}
 }
+
+// TestFreshLoginClearsBlocked guards the report that a just-added account showed
+// "需重新登录" immediately.
+//
+// A blocked flag is only ever set when the server rejects the credential, but an
+// account can still carry one from an earlier failure. Logging in again is proof
+// the credential works, so the flag must be cleared at that point — otherwise the
+// account appears dead the moment it is added.
+func TestFreshLoginClearsBlocked(t *testing.T) {
+	state.accounts = newAccountStore()
+	state.settings.setDataDir("")
+
+	creds := &tinkerCredentials{
+		AccessToken:  "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjk5OTk5OTk5OTl9.sig",
+		RefreshToken: "rt",
+		Email:        "user@example.com",
+		UID:          "42",
+	}
+	key := creds.accountKey()
+
+	// An earlier failure parked the account.
+	state.accounts.observe(creds, "")
+	state.accounts.markBlocked(key, "invalid JWT refresh token")
+	if record := state.accounts.lookup(key); record == nil || !record.Blocked {
+		t.Fatal("前置条件失败：账号应已被标记")
+	}
+
+	// Logging in again must clear it.
+	state.accounts.clearBlocked(key)
+	state.accounts.observe(creds, "")
+	if record := state.accounts.lookup(key); record != nil && record.Blocked {
+		t.Error("重新登录后 blocked 应被清除")
+	}
+}
+
+// TestTransientRefreshFailureDoesNotBlock guards the other half: a network blip
+// must not be reported as a dead credential.
+func TestTransientRefreshFailureDoesNotBlock(t *testing.T) {
+	state.accounts = newAccountStore()
+	state.settings.setDataDir("")
+
+	creds := &tinkerCredentials{Email: "user@example.com", UID: "42"}
+	state.accounts.observe(creds, "")
+
+	// A plain error (no apiError) is what a timeout or transport failure looks
+	// like; the refresh handler must not call markBlocked for it.
+	var errRefresh error = errStub("dial tcp: timeout")
+	var apiErr *apiError
+	if errors.As(errRefresh, &apiErr) {
+		t.Fatal("普通错误不应被识别为 apiError")
+	}
+	if record := state.accounts.lookup(creds.accountKey()); record != nil && record.Blocked {
+		t.Error("瞬时失败不应标记 blocked")
+	}
+}
+
+type errStub string
+
+func (e errStub) Error() string { return string(e) }

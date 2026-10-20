@@ -142,6 +142,10 @@ func (s *accountStore) observe(creds *tinkerCredentials, authIndex string) {
 	if creds.ExpiresAt > 0 {
 		record.ExpiresAt = creds.ExpiresAt
 	}
+	// Seeing a credential again means it is in use; an old failure streak should
+	// not decide anything about it.
+	record.Failures = 0
+	record.CooldownUntil = 0
 	s.mu.Unlock()
 	s.save(state.settings.dataDir())
 }

@@ -223,6 +223,10 @@ func handleLoginVerify(body []byte) ([]byte, error) {
 		logf("写入 CPA 账号存储失败: %v", persistErr)
 	}
 
+	// A fresh login is proof the credential works: clear anything an earlier
+	// failure left behind, or the account would show "需重新登录" the moment it
+	// appears.
+	state.accounts.clearBlocked(creds.accountKey())
 	state.accounts.observe(creds, auth.FileName)
 
 	loginSessions.update(req.State, func(s *loginSession) {
