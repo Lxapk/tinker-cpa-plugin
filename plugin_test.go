@@ -348,3 +348,54 @@ func TestLoginPageURLIsRelative(t *testing.T) {
 		t.Errorf("loginPageURL lost the state: %q", got)
 	}
 }
+
+// TestThemeFollowsHost guards the three-part theme contract.
+//
+// CPA writes data-theme="dark" / "white" on its own root and removes it for
+// "follow system", so the stylesheet must handle all three cases and the script
+// must copy the host's choice onto this document — the page is rendered inside
+// the host, and a hardcoded palette made it stay light while the host went dark.
+func TestThemeFollowsHost(t *testing.T) {
+	for _, want := range []string{
+		`:root[data-theme="white"]`,
+		`:root[data-theme="dark"]`,
+		`@media (prefers-color-scheme: light)`,
+		`:root:not([data-theme])`,
+	} {
+		if !strings.Contains(uiCSS, want) {
+			t.Errorf("样式表缺少 %s", want)
+		}
+	}
+
+	script := mainPageScript()
+	if !strings.Contains(script, "adoptHostTheme") {
+		t.Error("缺少读取宿主主题的脚本")
+	}
+	if !strings.Contains(script, `setAttribute(name, value)`) {
+		t.Error("脚本没有把宿主主题应用到本页")
+	}
+	if !strings.Contains(script, "} catch (e) {") {
+		t.Error("跨域读取父文档会抛异常，必须捕获后才能回退")
+	}
+	if !strings.Contains(script, "setInterval(adoptHostTheme") {
+		t.Error("宿主换主题不会重载页面，需要定期复查")
+	}
+}
+
+// TestPageDoesNotHardcodeTheme checks the <html> tag itself: the CSS selectors are
+// expected there, but the element must not carry a fixed theme.
+func TestPageDoesNotHardcodeTheme(t *testing.T) {
+	page := renderMainPage()
+	open := strings.Index(page, "<html")
+	if open < 0 {
+		t.Fatal("找不到 <html> 标签")
+	}
+	close := strings.Index(page[open:], ">")
+	if close < 0 {
+		t.Fatal("<html> 标签未闭合")
+	}
+	tag := page[open : open+close]
+	if strings.Contains(tag, "data-theme") {
+		t.Errorf("<html> 不应写死主题: %s", tag)
+	}
+}

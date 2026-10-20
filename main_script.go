@@ -16,6 +16,47 @@ func mainPageScript() string {
 (function () {
   "use strict";
 
+  /* ---------- theme ---------- */
+
+  // Follow the host's theme.
+  //
+  // CPA writes data-theme="dark" or data-theme="white" on its own <html> and
+  // removes the attribute for "follow system". This page is loaded inside that
+  // document (or in an iframe of it), so the attribute can be copied across —
+  // except when the page is opened in its own tab, where there is no host. Then
+  // the attribute is left absent and the media query decides, which is exactly
+  // the "follow system" case.
+  //
+  // Reading a parent document from another origin throws, and the host does not
+  // reload the iframe when the operator switches theme, so the check has to be
+  // guarded and repeated.
+  function adoptHostTheme() {
+    var theme = "";
+    // Same-origin parent: read the attribute directly.
+    try {
+      if (window.parent && window.parent !== window && window.parent.document) {
+        theme = window.parent.document.documentElement.getAttribute("data-theme") || "";
+      }
+    } catch (e) {
+      // Cross-origin parent: the read throws, which is expected when the panel
+      // embeds the page from another host. Fall through to the query parameter.
+      theme = "";
+    }
+    // The host may also pass the theme explicitly, which covers the cross-origin case.
+    if (!theme) {
+      try { theme = new URLSearchParams(location.search).get("theme") || ""; } catch (e) { theme = ""; }
+    }
+    attach("data-theme", theme);
+  }
+
+  function attach(name, value) {
+    if (value) document.documentElement.setAttribute(name, value);
+    else document.documentElement.removeAttribute(name);
+  }
+
+  adoptHostTheme();
+  setInterval(adoptHostTheme, 1500);
+
   // CPA stores its own key under "cpa-management-key"; reuse it so the operator
   // never retypes what the panel already knows.
   var PANEL_KEY = "cpa-management-key";

@@ -109,9 +109,9 @@ func renderAccountsView() string {
 	if total == 0 {
 		b.WriteString(`<div class="empty">还没有账号。点「添加账号」用邮箱验证码登录。</div>`)
 	} else {
-		b.WriteString(`<div class="table-wrap"><table><thead><tr>`)
-		b.WriteString(`<th>账号</th><th>状态</th><th class="num">调用</th>`)
-		b.WriteString(`<th>最近使用</th><th>到期</th><th class="act"></th>`)
+		b.WriteString(`<div class="tbl-wrap"><table><thead><tr>`)
+		b.WriteString(`<th>账号</th><th class="state">状态</th><th class="num">调用</th>`)
+		b.WriteString(`<th class="num">到期</th><th class="act"></th>`)
 		b.WriteString(`</tr></thead><tbody>`)
 		for _, record := range accounts {
 			b.WriteString(renderAccountRow(record, now))
@@ -119,8 +119,8 @@ func renderAccountsView() string {
 		b.WriteString(`</tbody></table></div>`)
 	}
 
-	b.WriteString(`<div class="pad"><div class="note">` +
-		`启停会同时写入 CPA 的 auth 文件，与该账号在 CPA 面板里的状态保持一致。</div></div>`)
+	b.WriteString(`<div class="foot"><span class="note">` +
+		`启停会同时写入 CPA 的 auth 文件，与该账号在 CPA 面板里的状态保持一致。</span></div>`)
 	b.WriteString(`</div>`)
 	b.WriteString(`</section>`)
 	return b.String()
@@ -151,10 +151,10 @@ func renderAccountRow(record accountRecord, now int64) string {
 	}
 
 	return `<tr>` +
-		`<td class="who" title="` + html.EscapeString(name) + `">` + html.EscapeString(name) + `</td>` +
+		`<td><div class="acct-name"><strong title="` + html.EscapeString(name) + `">` +
+		html.EscapeString(name) + `</strong></div></td>` +
 		`<td class="state">` + status + `</td>` +
 		`<td class="num">` + fmt.Sprint(record.CallCount) + `</td>` +
-		`<td class="note num">` + html.EscapeString(humanTime(record.LastUsed)) + `</td>` +
 		`<td class="note num">` + html.EscapeString(humanTime(record.ExpiresAt)) + `</td>` +
 		`<td class="act">` + action + `</td>` +
 		`</tr>`
@@ -202,7 +202,7 @@ func renderUsageView() string {
 	if len(recent) == 0 {
 		b.WriteString(`<div class="empty">还没有调用记录。</div>`)
 	} else {
-		b.WriteString(`<div class="table-wrap"><table><thead><tr>`)
+		b.WriteString(`<div class="tbl-wrap"><table><thead><tr>`)
 		b.WriteString(`<th>时间</th><th>账号</th><th>模型</th><th>状态</th><th class="num">耗时</th>`)
 		b.WriteString(`</tr></thead><tbody>`)
 		for _, entry := range recent {
