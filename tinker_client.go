@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"time"
 )
@@ -555,7 +556,13 @@ func (c *tinkerClient) uploadImage(ctx context.Context, accessToken string, data
 	if errField := writer.WriteField("map", string(mapJSON)); errField != nil {
 		return nil, errField
 	}
-	part, errPart := writer.CreateFormFile("0", filename)
+	// CreateFormFile hard-codes application/octet-stream, which Tinker rejects
+	// ("Invalid file type: application/octet-stream"). The part has to declare the
+	// real image type, so it is built by hand.
+	header := textproto.MIMEHeader{}
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="0"; filename="%s"`, filename))
+	header.Set("Content-Type", contentType)
+	part, errPart := writer.CreatePart(header)
 	if errPart != nil {
 		return nil, errPart
 	}

@@ -759,6 +759,7 @@ func TestVideoAliasesPassCPAWhitelist(t *testing.T) {
 		"grok-imagine-video",
 		"grok-imagine-video-1.5",
 		"sora-2",
+		"xai/grok-imagine-video",
 	}
 	for _, name := range whitelisted {
 		if !isVideoModelName(name) {

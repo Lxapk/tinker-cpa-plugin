@@ -57,21 +57,9 @@ var toolCatalogue = []toolRef{
 
 	// ---- video ----
 	//
-	// CPA's video endpoints are gated by a hard-coded name list:
-	// isXAIVideosModel accepts grok-imagine-video / -1.5 (optionally prefixed with
-	// xai/, x-ai/ or grok/), and /openai/v1/videos additionally accepts sora-2.
-	// A plugin model called "veo-video" is rejected before the request reaches us
-	// with "Model ... is not supported on /v1/videos/generations".
-	//
-	// So each Tinker video tool is exposed twice: under its own name for
-	// /v1/chat/completions, and under a whitelisted name so the standard video
-	// endpoints work. The suffix distinguishes which tool runs:
-	//
-	//	grok-imagine-video                  -> the configured default tool
-	//	grok-imagine-video-minimax          -> minimax_video
-	//	grok-imagine-video-veo              -> veo_text_to_video
-	//	grok-imagine-video-kling            -> kling_image_to_video
-	//	grok-imagine-video-seedance         -> seedance_video
+	// CPA's video endpoints are gated by a hard-coded name list (see the alias
+	// block below), so each tool keeps its own name for /v1/chat/completions and
+	// the whitelisted aliases cover the standard video endpoints.
 	{OpenAI: "minimax-video", ToolID: "minimax_video", ModelID: "minimax-h3",
 		OutputType: "video", DisplayName: "MiniMax H3 Video Generator", Platform: "MiniMax"},
 	{OpenAI: "veo-video", ToolID: "veo_text_to_video", ModelID: "veo-3.1-generate-preview",
@@ -82,16 +70,24 @@ var toolCatalogue = []toolRef{
 		OutputType: "video", DisplayName: "Seedance Video Generator", Platform: "ByteDance"},
 
 	// Whitelisted aliases for the standard video endpoints.
+	//
+	// CPA's isXAIVideosModel requires the base name to be one of three exact
+	// strings, so a suffix cannot be used to pick a tool. Only the *prefix* is
+	// free (it must be empty, xai/, x-ai/ or grok/). The prefix therefore carries
+	// the tool choice, and the base name stays inside the whitelist:
+	//
+	//	grok-imagine-video            -> the default tool (MiniMax)
+	//	xai/grok-imagine-video        -> valid, same as above
+	//	grok-imagine-video-veo        -> REJECTED by CPA, suffix not allowed
+	//
+	// A dedicated "tinker/" prefix is also passed through by imagesModelParts, but
+	// the prefix check would reject it, so the xai/grok prefixes are the usable
+	// ones. Tool selection therefore falls back to the plugin's default, and the
+	// per-tool names remain available on /v1/chat/completions.
 	{OpenAI: "grok-imagine-video", ToolID: "minimax_video", ModelID: "minimax-h3",
 		OutputType: "video", DisplayName: "Tinker Video (MiniMax H3)", Platform: "Tinker", Alias: true},
-	{OpenAI: "grok-imagine-video-minimax", ToolID: "minimax_video", ModelID: "minimax-h3",
-		OutputType: "video", DisplayName: "Tinker Video (MiniMax H3)", Platform: "Tinker", Alias: true},
-	{OpenAI: "grok-imagine-video-veo", ToolID: "veo_text_to_video", ModelID: "veo-3.1-generate-preview",
+	{OpenAI: "grok-imagine-video-1.5", ToolID: "veo_text_to_video", ModelID: "veo-3.1-generate-preview",
 		OutputType: "video", DisplayName: "Tinker Video (Veo)", Platform: "Tinker", Alias: true},
-	{OpenAI: "grok-imagine-video-kling", ToolID: "kling_image_to_video", ModelID: "kling-o3-pro",
-		OutputType: "video", DisplayName: "Tinker Video (Kling)", Platform: "Tinker", Alias: true},
-	{OpenAI: "grok-imagine-video-seedance", ToolID: "seedance_video", ModelID: "seedance-2.0",
-		OutputType: "video", DisplayName: "Tinker Video (Seedance)", Platform: "Tinker", Alias: true},
 }
 
 // resolveTool maps a requested model name onto a tool.
