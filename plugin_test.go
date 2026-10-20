@@ -643,3 +643,73 @@ func TestTextToolInputsStayMinimal(t *testing.T) {
 		t.Errorf("文本工具只应收到 prompt，得到 %v", inputs)
 	}
 }
+
+// TestVideoInputsCarryDurationAndRatio covers the video path, which had no input
+// translation at all: only the prompt was sent, so every clip came back at the
+// tool's default length and orientation.
+func TestVideoInputsCarryDurationAndRatio(t *testing.T) {
+	veo := resolveTool("veo-video")
+
+	// OpenAI video clients send "seconds".
+	inputs := buildToolInputs(veo, "a dog running", []byte(`{"seconds":"6","size":"9:16"}`))
+	if inputs["duration"] != 6 {
+		t.Errorf("seconds=6 应映射为 duration=6，得到 %v", inputs["duration"])
+	}
+	if inputs["aspect_ratio"] != "9:16" {
+		t.Errorf("aspect_ratio 应传递，得到 %v", inputs["aspect_ratio"])
+	}
+
+	// A duration the tool does not accept is snapped to the nearest allowed value.
+	// Veo allows 4 or 6, so 5 becomes 4 or 6 — never an invalid 5.
+	inputs = buildToolInputs(veo, "x", []byte(`{"duration":5}`))
+	dur, _ := inputs["duration"].(int)
+	if dur != 4 && dur != 6 {
+		t.Errorf("Veo 只接受 4/6，得到 %v", inputs["duration"])
+	}
+
+	// Kling allows 3/4/5, so 5 is kept as-is.
+	kling := resolveTool("kling-video")
+	inputs = buildToolInputs(kling, "x", []byte(`{"duration":5}`))
+	if inputs["duration"] != 5 {
+		t.Errorf("Kling 应保留 5，得到 %v", inputs["duration"])
+	}
+
+	// No duration requested: the tool's own default applies.
+	inputs = buildToolInputs(kling, "x", []byte(`{}`))
+	if _, has := inputs["duration"]; has {
+		t.Error("未指定时长时不应强行写入")
+	}
+}
+
+// TestVideoAudioFlag checks the generate_audio passthrough.
+func TestVideoAudioFlag(t *testing.T) {
+	veo := resolveTool("veo-video")
+	inputs := buildToolInputs(veo, "x", []byte(`{"generate_audio":false}`))
+	if v, ok := inputs["generate_audio"].(bool); !ok || v {
+		t.Errorf("应传递 generate_audio=false，得到 %v", inputs["generate_audio"])
+	}
+
+	// Tools without the field must not receive it.
+	flux := resolveTool("flux-image")
+	inputs = buildToolInputs(flux, "x", []byte(`{"generate_audio":true}`))
+	if _, has := inputs["generate_audio"]; has {
+		t.Error("flux 不接受 generate_audio")
+	}
+}
+
+// TestVideoRatiosFitToolEnum: each video tool has its own ratio list, so a ratio
+// outside it must not be forwarded — the upstream rejects unknown enum values.
+func TestVideoRatiosFitToolEnum(t *testing.T) {
+	minimax := resolveTool("minimax-video")
+	inputs := buildToolInputs(minimax, "x", []byte(`{"size":"21:9"}`))
+	if inputs["aspect_ratio"] != "21:9" {
+		t.Errorf("MiniMax 接受 21:9，得到 %v", inputs["aspect_ratio"])
+	}
+
+	veo := resolveTool("veo-video")
+	inputs = buildToolInputs(veo, "x", []byte(`{"size":"21:9"}`))
+	// Veo only offers 9:16 / 16:9; a landscape 21:9 has to fall back to 16:9.
+	if inputs["aspect_ratio"] != "16:9" {
+		t.Errorf("Veo 只接受 9:16/16:9，21:9 应回落到 16:9，得到 %v", inputs["aspect_ratio"])
+	}
+}

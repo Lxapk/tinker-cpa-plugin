@@ -298,13 +298,36 @@ type toolFields struct {
 	Quality     bool // gpt_image
 	Format      bool
 	Enhance     bool
+	Duration    bool // video tools
+	Audio       bool // video tools that can synthesise audio
 }
 
 var toolFieldSupport = map[string]toolFields{
-	"gemini_image":       {AspectRatio: true, Resolution: true, Format: true, Enhance: true},
-	"gpt_image":          {AspectRatio: true, Quality: true, Format: true, Enhance: true},
-	"flux_pro_kontext":   {AspectRatio: true, Format: true, Enhance: true},
-	"grok_image":         {AspectRatio: true, Format: true, Enhance: true},
+	// Images.
+	"gemini_image":     {AspectRatio: true, Resolution: true, Format: true, Enhance: true},
+	"gpt_image":        {AspectRatio: true, Quality: true, Format: true, Enhance: true},
+	"flux_pro_kontext": {AspectRatio: true, Format: true, Enhance: true},
+	"grok_image":       {AspectRatio: true, Format: true, Enhance: true},
+
+	// Video. Note there is no resolution field: the duration and aspect ratio are
+	// the only knobs the upstream exposes, so a client asking for 4K video is
+	// honoured only in the sense that the request is not rejected.
+	"minimax_video":        {AspectRatio: true, Duration: true, Enhance: true},
+	"veo_text_to_video":    {AspectRatio: true, Duration: true, Audio: true, Enhance: true},
+	"kling_image_to_video": {AspectRatio: true, Duration: true, Audio: true},
+	"seedance_video":       {AspectRatio: true, Duration: true, Audio: true, Enhance: true},
+}
+
+// videoDurations lists the durations each video tool accepts, in seconds.
+//
+// The values differ per tool and the upstream rejects anything outside the enum, so
+// a requested duration has to be snapped to the nearest allowed value rather than
+// passed through.
+var videoDurations = map[string][]int{
+	"minimax_video":        {5, 6},
+	"veo_text_to_video":    {4, 6},
+	"kling_image_to_video": {3, 4, 5},
+	"seedance_video":       {4, 5, 6},
 }
 
 // buildToolInputs turns an OpenAI image request into the tool's input map.
@@ -317,21 +340,35 @@ var toolFieldSupport = map[string]toolFields{
 func buildToolInputs(ref toolRef, prompt string, request []byte) map[string]any {
 	inputs := map[string]any{"prompt": prompt}
 	fields, known := toolFieldSupport[ref.ToolID]
-	if !known || ref.OutputType != "image" {
+	if !known {
 		return inputs
 	}
 
 	var body struct {
-		Size       string `json:"size"`
-		Quality    string `json:"quality"`
-		Resolution string `json:"resolution"`
-		Aspect     string `json:"aspect_ratio"`
-		Format     string `json:"output_format"`
+		Size       string          `json:"size"`
+		Quality    string          `json:"quality"`
+		Resolution string          `json:"resolution"`
+		Aspect     string          `json:"aspect_ratio"`
+		Format     string          `json:"output_format"`
+		Duration   json.RawMessage `json:"duration"`
+		Seconds    json.RawMessage `json:"seconds"`
+		Audio      *bool           `json:"generate_audio"`
 	}
 	_ = json.Unmarshal(request, &body)
 
+	if fields.Duration {
+		if d := durationFrom(ref.ToolID, body.Duration, body.Seconds); d > 0 {
+			// The upstream declares duration as INTEGER with a string enum, so the
+			// value must be a number on the wire.
+			inputs["duration"] = d
+		}
+	}
+	if fields.Audio && body.Audio != nil {
+		inputs["generate_audio"] = *body.Audio
+	}
+
 	if fields.AspectRatio {
-		if ratio := aspectRatioFrom(body.Aspect, body.Size); ratio != "" {
+		if ratio := aspectRatioFor(ref.ToolID, body.Aspect, body.Size); ratio != "" {
 			inputs["aspect_ratio"] = ratio
 		}
 	}
@@ -361,6 +398,11 @@ func aspectRatioFrom(explicit, size string) string {
 	size = strings.ToLower(strings.TrimSpace(size))
 	if size == "" {
 		return ""
+	}
+	// A client may put the ratio itself in size ("16:9"), which is not a pixel
+	// dimension; treat it as the ratio rather than failing to parse it.
+	if strings.Contains(size, ":") && !strings.Contains(size, "x") {
+		return size
 	}
 	parts := strings.SplitN(size, "x", 2)
 	if len(parts) != 2 {
@@ -477,4 +519,120 @@ func normalizeFormat(value string) string {
 		return strings.ToLower(strings.TrimSpace(value))
 	}
 	return ""
+}
+
+// durationFrom snaps a requested clip length to one the tool accepts.
+//
+// Clients express it differently — "duration": 5, "seconds": "6", or nested in the
+// OpenAI video request — so both fields are read and any of them parsed. The result
+// is the closest allowed value, because the upstream validates against its enum and
+// rejects anything else.
+func durationFrom(toolID string, raw ...json.RawMessage) int {
+	allowed := videoDurations[toolID]
+	if len(allowed) == 0 {
+		return 0
+	}
+	requested := 0
+	for _, field := range raw {
+		if len(field) == 0 {
+			continue
+		}
+		var asNumber float64
+		if errNum := json.Unmarshal(field, &asNumber); errNum == nil && asNumber > 0 {
+			requested = int(asNumber + 0.5)
+			break
+		}
+		var asString string
+		if errStr := json.Unmarshal(field, &asString); errStr == nil {
+			var parsed int
+			if _, errScan := fmt.Sscanf(strings.TrimSpace(asString), "%d", &parsed); errScan == nil && parsed > 0 {
+				requested = parsed
+				break
+			}
+		}
+	}
+	if requested <= 0 {
+		// No preference: leave it to the tool's default rather than picking one.
+		return 0
+	}
+	best := allowed[0]
+	bestGap := absInt(requested - best)
+	for _, candidate := range allowed[1:] {
+		if gap := absInt(requested - candidate); gap < bestGap {
+			best, bestGap = candidate, gap
+		}
+	}
+	return best
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// aspectRatios lists the ratios each tool accepts.
+//
+// The lists differ — Veo offers only 9:16 and 16:9 while MiniMax offers seven — and
+// the upstream validates against them, so a requested ratio has to be mapped onto
+// the tool's own set rather than forwarded as-is.
+var aspectRatios = map[string][]string{
+	"gemini_image":         {"auto", "9:16", "4:5", "3:4", "2:3", "1:1", "3:2", "4:3", "5:4", "16:9", "21:9"},
+	"gpt_image":            {"auto", "9:16", "3:4", "1:1", "4:3", "16:9"},
+	"flux_pro_kontext":     {"auto", "9:16", "3:4", "1:1", "4:3", "16:9"},
+	"grok_image":           {"9:16", "3:4", "2:3", "9:20", "1:2", "1:1", "3:2", "4:3", "16:9", "2:1", "20:9"},
+	"minimax_video":        {"auto", "9:16", "3:4", "1:1", "4:3", "16:9", "21:9"},
+	"veo_text_to_video":    {"9:16", "16:9"},
+	"kling_image_to_video": {"auto", "9:16", "1:1", "16:9"},
+	"seedance_video":       {"auto", "9:16", "3:4", "1:1", "4:3", "16:9", "21:9"},
+}
+
+// aspectRatioFor resolves a requested ratio onto the tool's accepted set.
+//
+// A client may send "16:9" in size, or "1920x1080"; both are normalised to a ratio
+// and then fitted to what the tool declares. Anything the tool cannot express falls
+// back to its nearest family (landscape or portrait) instead of being forwarded and
+// rejected.
+func aspectRatioFor(toolID, explicit, size string) string {
+	ratio := aspectRatioFrom(explicit, size)
+	if ratio == "" {
+		return ""
+	}
+	allowed := aspectRatios[toolID]
+	if len(allowed) == 0 {
+		return ratio
+	}
+	for _, candidate := range allowed {
+		if candidate == ratio {
+			return ratio
+		}
+	}
+	// Fit to the same orientation when the exact ratio is unavailable.
+	landscape := ratioIsLandscape(ratio)
+	for _, candidate := range allowed {
+		if candidate == "auto" {
+			continue
+		}
+		if ratioIsLandscape(candidate) == landscape {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// ratioIsLandscape reports whether a "W:H" ratio is wider than it is tall.
+func ratioIsLandscape(ratio string) bool {
+	parts := strings.SplitN(ratio, ":", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	var w, h int
+	if _, errW := fmt.Sscanf(strings.TrimSpace(parts[0]), "%d", &w); errW != nil {
+		return false
+	}
+	if _, errH := fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &h); errH != nil {
+		return false
+	}
+	return w > h
 }
