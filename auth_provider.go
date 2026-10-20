@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -45,6 +48,10 @@ type pendingLogin struct {
 }
 
 var pendingLogins = newPendingLoginStore()
+
+// hostAuthDir is the auth directory the host reported, which is where CPA parks
+// the OAuth callback file. It is preferred over any guessed path.
+var hostAuthDir atomic.Value
 
 type pendingLoginStore struct {
 	mu    sync.Mutex
@@ -177,8 +184,21 @@ func authLoginStart(request []byte) ([]byte, error) {
 	}
 
 	email := strings.TrimSpace(metaString(req.Metadata, "email", "username", "account"))
+
+	// Tinker logs in with an emailed code, so the flow needs an address before it
+	// can send anything. CPA's login dialog does not know that, so a start
+	// without one does not fail: it hands back this plugin's own form page, which
+	// collects the address and comes straight back to this handler with it.
 	if email == "" {
-		return nil, errors.New("请填写 Tinker 账号邮箱")
+		return okEnvelope(pluginapi.AuthLoginStartResponse{
+			Provider:  tinkerProviderKey,
+			URL:       tokenFormURL(req.BaseURL),
+			State:     randomToken(),
+			ExpiresAt: time.Now().Add(15 * time.Minute),
+			Metadata: map[string]any{
+				"message": "请输入用于接收验证码的 Tinker 账号邮箱。",
+			},
+		})
 	}
 	if !strings.Contains(email, "@") {
 		return nil, errors.New("邮箱格式不正确")
@@ -207,8 +227,25 @@ func authLoginStart(request []byte) ([]byte, error) {
 			"email": email,
 			// The panel renders this as the instruction above the input.
 			"message": "验证码已发送到 " + email + "，请在下方填入邮件中的 6 位验证码。",
+			"state":   stateToken,
 		},
 	})
+}
+
+// tokenFormURL points at the plugin's own email form.
+//
+// The host supplies BaseURL as the management callback root, so replacing the
+// path keeps the form on the same origin the panel is already talking to.
+func tokenFormURL(baseURL string) string {
+	base := strings.TrimSpace(baseURL)
+	if base == "" {
+		return "/v0/resource/plugins/" + pluginName + "/login"
+	}
+	trimmed := strings.TrimRight(base, "/")
+	if idx := strings.Index(trimmed, "/v0/management"); idx > 0 {
+		trimmed = trimmed[:idx]
+	}
+	return trimmed + "/v0/resource/plugins/" + pluginName + "/login"
 }
 
 /* ---------- auth.login.poll ---------- */
@@ -226,6 +263,7 @@ func authLoginPoll(request []byte) ([]byte, error) {
 		}
 	}
 
+	var callbackErr string
 	login := pendingLogins.get(req.State)
 	if login == nil {
 		return okEnvelope(pluginapi.AuthLoginPollResponse{
@@ -240,7 +278,23 @@ func authLoginPoll(request []byte) ([]byte, error) {
 		})
 	}
 
+	// CPA does not pass the code through Metadata: the panel posts it to the
+	// management API, which drops a file next to the auths for this exact state.
+	// Reading that file is the whole handoff.
+	if dir := strings.TrimSpace(req.Host.AuthDir); dir != "" {
+		hostAuthDir.Store(dir)
+	}
+
 	code := strings.TrimSpace(metaString(req.Metadata, "code", "otp", "password"))
+	if code == "" {
+		code, callbackErr = readOAuthCallbackCode(req.State)
+		if callbackErr != "" {
+			return okEnvelope(pluginapi.AuthLoginPollResponse{
+				Status:  pluginapi.AuthLoginStatusError,
+				Message: "登录失败：" + callbackErr,
+			})
+		}
+	}
 	if code == "" {
 		return okEnvelope(pluginapi.AuthLoginPollResponse{
 			Status:  pluginapi.AuthLoginStatusPending,
@@ -280,6 +334,69 @@ func authLoginPoll(request []byte) ([]byte, error) {
 		Status: pluginapi.AuthLoginStatusSuccess,
 		Auth:   tinkerAuthData(creds, ""),
 	})
+}
+
+// readOAuthCallbackCode reads the code CPA parked for this login.
+//
+// The file is named ".oauth-<provider>-<state>.oauth" inside the auth directory
+// and holds {"code","state","error"}. A missing file simply means the operator has
+// not submitted the code yet, which the caller reports as "pending".
+func readOAuthCallbackCode(state string) (string, string) {
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return "", ""
+	}
+	dirs := oauthCallbackDirs()
+	name := ".oauth-" + tinkerProviderKey + "-" + state + ".oauth"
+	for _, dir := range dirs {
+		raw, errRead := os.ReadFile(filepath.Join(dir, name))
+		if errRead != nil {
+			continue
+		}
+		var payload struct {
+			Code  string `json:"Code"`
+			State string `json:"State"`
+			Error string `json:"Error"`
+		}
+		if errUnmarshal := json.Unmarshal(raw, &payload); errUnmarshal != nil {
+			continue
+		}
+		if strings.TrimSpace(payload.Error) != "" {
+			return "", strings.TrimSpace(payload.Error)
+		}
+		if code := strings.TrimSpace(payload.Code); code != "" {
+			// The host has handed the code over; the file must not linger.
+			_ = os.Remove(filepath.Join(dir, name))
+			return code, ""
+		}
+	}
+	return "", ""
+}
+
+// oauthCallbackDirs lists the places CPA may have written the callback file.
+//
+// The auth directory is configurable, and the plugin cannot read the host's
+// config, so the usual locations are probed. A miss is harmless: the flow just
+// stays pending until the next poll.
+func oauthCallbackDirs() []string {
+	var dirs []string
+	if stored, ok := hostAuthDir.Load().(string); ok && strings.TrimSpace(stored) != "" {
+		dirs = append(dirs, stored)
+	}
+	for _, candidate := range []string{
+		os.Getenv("CLIPROXY_AUTH_DIR"),
+		"auths",
+		"auth",
+		filepath.Join("data", "auths"),
+	} {
+		if strings.TrimSpace(candidate) != "" {
+			dirs = append(dirs, candidate)
+		}
+	}
+	if home, errHome := os.UserHomeDir(); errHome == nil {
+		dirs = append(dirs, filepath.Join(home, ".cli-proxy-api"))
+	}
+	return dirs
 }
 
 /* ---------- auth.refresh ---------- */

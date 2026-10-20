@@ -194,6 +194,9 @@ func handleManagementRequest(request []byte) ([]byte, error) {
 	if method == http.MethodGet && isHomePath(path) {
 		return htmlManagementResponse(pageHTML())
 	}
+	if method == http.MethodGet && strings.HasSuffix(path, "/login") {
+		return htmlManagementResponse(loginFormHTML())
+	}
 
 	return handleManagement(request)
 }
