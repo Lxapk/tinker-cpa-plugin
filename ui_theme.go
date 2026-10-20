@@ -350,6 +350,48 @@ td.state, th.state { width: 1%; white-space: nowrap; }
 .pill.off { background: color-mix(in srgb, var(--error-color) 16%, transparent); color: var(--error-color); }
 .pill.wait { background: color-mix(in srgb, var(--quota-medium-color) 20%, transparent); color: var(--quota-medium-color); }
 
+/* ======================= guide rows ======================= */
+/* One card per model. A five-column table could not fit the ratio strings on a
+   phone — the last columns were simply cut off — so the parameters are listed
+   under the model name instead. */
+.guide-row {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+.guide-row:last-child { border-bottom: 0; }
+.guide-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.guide-head strong { font-size: 13.5px; }
+.guide-meta {
+  display: grid;
+  grid-template-columns: 58px 1fr;
+  gap: 5px 10px;
+  margin-top: 9px;
+  font-size: 12.5px;
+}
+.guide-meta dt { color: var(--text-tertiary); }
+.guide-meta dd { margin: 0; overflow-wrap: anywhere; }
+
+/* ======================= code block ======================= */
+pre.code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--text-primary);
+}
+pre.code code, .pad code {
+  font-family: var(--mono);
+  font-size: .94em;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
 /* ======================= trend ======================= */
 .trend { display: flex; align-items: flex-end; gap: 3px; height: 120px; padding: 16px var(--space-lg); }
 .trend .bar {

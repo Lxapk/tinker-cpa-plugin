@@ -32,6 +32,7 @@ func renderMainPage() string {
 	b.WriteString(renderAccountsView())
 	b.WriteString(renderUsageView())
 	b.WriteString(renderSettingsView())
+	b.WriteString(renderGuideView())
 	b.WriteString(`</main></div>`)
 
 	b.WriteString(`<div id="toasts"></div>`)
@@ -60,6 +61,7 @@ func renderNav() string {
 		{"view-accounts", "账号"},
 		{"view-usage", "统计"},
 		{"view-settings", "设置"},
+		{"view-guide", "说明"},
 	} {
 		cls := "tab"
 		if i == 0 {
@@ -357,4 +359,179 @@ func shortAccount(name string) string {
 		return name[:idx]
 	}
 	return name
+}
+
+// guideRow is one line of the model capability table.
+type guideRow struct {
+	Model     string
+	Kind      string
+	Res       string
+	Ratio     string
+	Extra     string
+	Endpoint  string
+}
+
+// guideRows is the capability table shown on the guide page.
+//
+// The values are what Tinker's tool schemas actually declare and what the plugin
+// maps onto them — measured, not assumed. The 2K/4K column is only filled for the
+// Gemini image tools because they are the only ones exposing a resolution field.
+var guideRows = []guideRow{
+	// ---- text ----
+	{Model: "claude-opus-4-8", Kind: "文字", Res: "—", Ratio: "—",
+		Extra: "支持参考图（reference_photos，最多 5 张）", Endpoint: "/v1/chat/completions"},
+	{Model: "gemini-3-pro", Kind: "文字", Res: "—", Ratio: "—",
+		Extra: "支持参考图（最多 5 张）", Endpoint: "/v1/chat/completions"},
+	{Model: "grok-4-1-fast-reasoning", Kind: "文字", Res: "—", Ratio: "—",
+		Extra: "支持参考图（最多 5 张）", Endpoint: "/v1/chat/completions"},
+	{Model: "gpt-5.2", Kind: "文字", Res: "—", Ratio: "—",
+		Extra: "支持参考图（最多 5 张）", Endpoint: "/v1/chat/completions"},
+
+	// ---- image ----
+	{Model: "gemini-3.1-flash-image", Kind: "图片", Res: "0_5K / 1K / 2K / 4K",
+		Ratio: "auto 9:16 4:5 3:4 2:3 1:1 3:2 4:3 5:4 16:9 21:9",
+		Extra: "参考图最多 10 张", Endpoint: "/v1/images/generations"},
+	{Model: "gpt-image", Kind: "图片", Res: "不支持（固定约 608×1088）",
+		Ratio: "auto 9:16 3:4 1:1 4:3 16:9",
+		Extra: "quality: auto/low/medium/high，只影响画质", Endpoint: "/v1/images/generations"},
+	{Model: "flux-image", Kind: "图片", Res: "不支持",
+		Ratio: "auto 9:16 3:4 1:1 4:3 16:9",
+		Extra: "参考图", Endpoint: "/v1/images/generations"},
+	{Model: "grok-image", Kind: "图片", Res: "不支持",
+		Ratio: "9:16 3:4 2:3 9:20 1:2 1:1 3:2 4:3 16:9 2:1 20:9",
+		Extra: "参考图最多 1 张", Endpoint: "/v1/images/generations"},
+
+	// ---- video ----
+	{Model: "minimax-video", Kind: "视频", Res: "不支持",
+		Ratio: "auto 9:16 3:4 1:1 4:3 16:9 21:9",
+		Extra: "时长 5/6 秒", Endpoint: "/v1/chat/completions"},
+	{Model: "veo-video", Kind: "视频", Res: "不支持",
+		Ratio: "9:16 16:9",
+		Extra: "时长 4/6 秒，可生成音频", Endpoint: "/v1/chat/completions"},
+	{Model: "kling-video", Kind: "视频", Res: "不支持",
+		Ratio: "auto 9:16 1:1 16:9",
+		Extra: "时长 3/4/5 秒，可生成音频", Endpoint: "/v1/chat/completions"},
+	{Model: "seedance-video", Kind: "视频", Res: "不支持",
+		Ratio: "auto 9:16 3:4 1:1 4:3 16:9 21:9",
+		Extra: "时长 4/5/6 秒，可生成音频", Endpoint: "/v1/chat/completions"},
+
+	// ---- video, standard endpoint ----
+	{Model: "grok-imagine-video", Kind: "视频", Res: "不支持",
+		Ratio: "同 minimax-video",
+		Extra: "标准视频接口名，实际跑 MiniMax；时长 5/6 秒", Endpoint: "/v1/videos/generations"},
+	{Model: "grok-imagine-video-1.5", Kind: "视频", Res: "不支持",
+		Ratio: "同 veo-video",
+		Extra: "标准视频接口名，实际跑 Veo；时长 4/6 秒", Endpoint: "/v1/videos/generations"},
+}
+
+// renderGuideView is the capability reference page.
+//
+// It exists because the limits are not guessable: only the Gemini image tools take
+// a resolution, the video tools have per-tool duration enums, and CPA's video
+// whitelist forces two of the names to differ from the tool names. Putting that in
+// the panel saves the operator from discovering it through failed requests.
+func renderGuideView() string {
+	var b strings.Builder
+	b.WriteString(`<section class="view" id="view-guide" hidden>`)
+
+	b.WriteString(`<div class="group-head"><h2>模型能力</h2>` +
+		`<span class="desc">Tinker 上游实际支持的参数，请求时放在 Body 顶层</span></div>`)
+
+	b.WriteString(`<div class="box">`)
+	b.WriteString(`<header><h3>参数对照 <span class="hint">size 与 resolution 仅 Gemini 图片可用</span></h3></header>`)
+	// One card per model rather than a five-column table: on a phone the ratio and
+	// note columns were cut off entirely, and the ratio strings are long enough that
+	// even a wide table would need scrolling.
+	for _, row := range guideRows {
+		b.WriteString(`<div class="guide-row">`)
+		b.WriteString(`<div class="guide-head"><strong class="mono">` +
+			html.EscapeString(row.Model) + `</strong>` +
+			`<span class="pill ` + map[string]string{
+				"文字": "on", "图片": "wait", "视频": "off",
+			}[row.Kind] + `">` + html.EscapeString(row.Kind) + `</span></div>`)
+
+		b.WriteString(`<dl class="guide-meta">`)
+		// Resolution: only the Gemini image tools accept one, so it is the line
+		// worth reading first.
+		if strings.Contains(row.Res, "K") {
+			b.WriteString(`<dt>分辨率</dt><dd><span class="pill on">` +
+				html.EscapeString(row.Res) + `</span></dd>`)
+		} else {
+			b.WriteString(`<dt>分辨率</dt><dd class="note">` +
+				html.EscapeString(row.Res) + `</dd>`)
+		}
+		if row.Ratio != "—" {
+			b.WriteString(`<dt>比例</dt><dd class="mono note">` +
+				html.EscapeString(row.Ratio) + `</dd>`)
+		}
+		if row.Extra != "" {
+			b.WriteString(`<dt>其他</dt><dd class="note">` +
+				html.EscapeString(row.Extra) + `</dd>`)
+		}
+		b.WriteString(`<dt>接口</dt><dd class="mono note">` +
+			html.EscapeString(row.Endpoint) + `</dd>`)
+		b.WriteString(`</dl></div>`)
+	}
+	b.WriteString(`<div class="foot"><span class="note">` +
+		`只有 gemini-3.1-flash-image 能指定 2K / 4K；其余图片与全部视频工具的分辨率由上游固定。` +
+		`</span></div></div>`)
+
+	// ---- request examples ----
+	b.WriteString(`<div class="group-head"><h2>请求示例</h2>` +
+		`<span class="desc">参数放在请求体顶层，不要写进消息文字</span></div>`)
+
+	b.WriteString(`<div class="box">`)
+	b.WriteString(`<header><h3>图片：2K 竖版</h3></header><div class="pad">`)
+	b.WriteString(`<pre class="code">` + html.EscapeString(`{
+  "model": "gemini-3.1-flash-image",
+  "size": "2K",
+  "aspect_ratio": "9:16",
+  "messages": [{"role":"user","content":"a tall red tower"}]
+}`) + `</pre>`)
+	b.WriteString(`<div class="note" style="margin-top:10px">` +
+		`实测输出 1536×2752。size 也可写 <code>4K</code> 或 <code>2048x2048</code>。` +
+		`</div></div></div>`)
+
+	b.WriteString(`<div class="box">`)
+	b.WriteString(`<header><h3>图片：gpt-image 只能用 quality</h3></header><div class="pad">`)
+	b.WriteString(`<pre class="code">` + html.EscapeString(`{
+  "model": "gpt-image",
+  "quality": "high",
+  "aspect_ratio": "9:16",
+  "messages": [{"role":"user","content":"a red apple"}]
+}`) + `</pre>`)
+	b.WriteString(`<div class="note" style="margin-top:10px">` +
+		`实测 low / medium / high 三档输出尺寸都是 608×1088，quality 只影响画质。` +
+		`</div></div></div>`)
+
+	b.WriteString(`<div class="box">`)
+	b.WriteString(`<header><h3>视频：标准接口</h3></header><div class="pad">`)
+	b.WriteString(`<pre class="code">` + html.EscapeString(`POST /v1/videos/generations
+{
+  "model": "grok-imagine-video",
+  "prompt": "waves crashing on rocks",
+  "seconds": "6",
+  "size": "16:9"
+}`) + `</pre>`)
+	b.WriteString(`<div class="note" style="margin-top:10px">` +
+		`CPA 的视频端点只认 grok-imagine-video / -1.5 两个名字。` +
+		`时长会吸附到该工具允许的值（如 Veo 只接受 4 或 6）。` +
+		`</div></div></div>`)
+
+	b.WriteString(`<div class="box">`)
+	b.WriteString(`<header><h3>多模态：看图</h3></header><div class="pad">`)
+	b.WriteString(`<pre class="code">` + html.EscapeString(`{
+  "model": "claude-opus-4-8",
+  "messages": [{"role":"user","content":[
+    {"type":"text","text":"这张图是什么颜色？"},
+    {"type":"image_url","image_url":{"url":"https://example.com/a.png"}}
+  ]}]
+}`) + `</pre>`)
+	b.WriteString(`<div class="note" style="margin-top:10px">` +
+		`支持 http(s) 链接与 data: base64。插件会下载后重新上传给 Tinker，` +
+		`因为上游只接受它自己的 blob 引用。` +
+		`</div></div></div>`)
+
+	b.WriteString(`</section>`)
+	return b.String()
 }
