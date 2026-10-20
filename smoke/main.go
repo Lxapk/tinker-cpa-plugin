@@ -108,10 +108,14 @@ func main() {
 	assertOK(regResp, "plugin.register")
 	var reg struct {
 		SchemaVersion uint32 `json:"schema_version"`
-		Metadata      struct {
-			Name         string `json:"name"`
-			Version      string `json:"version"`
-			ConfigFields []any  `json:"config_fields"`
+		// The SDK's pluginapi.Metadata carries no json tags, so the host and this
+		// smoke test both read PascalCase field names.
+		Metadata struct {
+			Name         string `json:"Name"`
+			Version      string `json:"Version"`
+			Author       string `json:"Author"`
+			Repo         string `json:"GitHubRepository"`
+			ConfigFields []any  `json:"ConfigFields"`
 		} `json:"metadata"`
 		Capabilities map[string]any `json:"capabilities"`
 	}
@@ -121,6 +125,13 @@ func main() {
 	}
 	if len(reg.Metadata.ConfigFields) == 0 {
 		die("expected config fields, got none")
+	}
+	// The host refuses a plugin whose metadata is incomplete, so prove it here
+	// rather than after an install.
+	if reg.Metadata.Name == "" || reg.Metadata.Version == "" ||
+		reg.Metadata.Author == "" || reg.Metadata.Repo == "" {
+		die("metadata incomplete: name=%q version=%q author=%q repo=%q",
+			reg.Metadata.Name, reg.Metadata.Version, reg.Metadata.Author, reg.Metadata.Repo)
 	}
 	ok("registered %s v%s (schema=%d, config_fields=%d)",
 		reg.Metadata.Name, reg.Metadata.Version, reg.SchemaVersion, len(reg.Metadata.ConfigFields))
