@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -234,18 +235,26 @@ func authLoginStart(request []byte) ([]byte, error) {
 
 // tokenFormURL points at the plugin's own email form.
 //
-// The host supplies BaseURL as the management callback root, so replacing the
-// path keeps the form on the same origin the panel is already talking to.
+// BaseURL is the full callback URL the host built for this login
+// (e.g. http://127.0.0.1:8317/v0/management/oauth-callback). Only its origin is
+// reusable: the management path prefix differs between CPA builds, so slicing
+// the path by a guessed marker produced URLs like
+// ".../v8/management/oauth/callback/v0/resource/plugins/tinker/login".
+//
+// The resource path is therefore kept relative — the panel resolves it against
+// the origin it is already talking to — and the host's own base is only used
+// when it parses into a clean origin.
 func tokenFormURL(baseURL string) string {
+	const resourcePath = "/v0/resource/plugins/" + pluginName + "/login"
 	base := strings.TrimSpace(baseURL)
 	if base == "" {
-		return "/v0/resource/plugins/" + pluginName + "/login"
+		return resourcePath
 	}
-	trimmed := strings.TrimRight(base, "/")
-	if idx := strings.Index(trimmed, "/v0/management"); idx > 0 {
-		trimmed = trimmed[:idx]
+	parsed, errParse := url.Parse(base)
+	if errParse != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return resourcePath
 	}
-	return trimmed + "/v0/resource/plugins/" + pluginName + "/login"
+	return parsed.Scheme + "://" + parsed.Host + resourcePath
 }
 
 /* ---------- auth.login.poll ---------- */
