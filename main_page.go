@@ -74,7 +74,7 @@ func renderNav() string {
 
 // renderAccountsView is the account pool page: a summary strip, then the pool.
 func renderAccountsView() string {
-	accounts := state.accounts.list()
+	accounts := liveAccounts()
 	total := len(accounts)
 	enabled, cooling, blocked := 0, 0, 0
 	now := nowUnixMilli()
@@ -162,7 +162,7 @@ func renderAccountRow(record accountRecord, now int64) string {
 
 // renderUsageView is the statistics page.
 func renderUsageView() string {
-	accounts := state.accounts.list()
+	accounts := liveAccounts()
 	var totalCalls, totalOK, totalFail int64
 	for _, record := range accounts {
 		totalCalls += record.CallCount

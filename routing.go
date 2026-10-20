@@ -228,7 +228,7 @@ func routingStatusJSON() map[string]any {
 	last := rotation.last
 	rotation.mu.Unlock()
 
-	accounts := state.accounts.list()
+	accounts := liveAccounts()
 	enabled, cooling := 0, 0
 	now := nowUnixMilli()
 	for _, record := range accounts {

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -229,96 +228,34 @@ func handleManagement(request []byte) ([]byte, error) {
 // means the panel shows one row per credential even when the plugin has not seen
 // it used yet.
 func accountsPayload() map[string]any {
-	records := state.accounts.list()
-	byKey := map[string]*accountRecord{}
-	for idx := range records {
-		byKey[strings.ToLower(records[idx].Key)] = &records[idx]
-	}
+	records := liveAccounts()
 
-	rows := make([]map[string]any, 0)
-	seen := map[string]bool{}
-
-	for _, entry := range tinkerAuthEntries() {
-		creds := readAuthFileCredentials(entry.Path)
-		key := ""
-		email := strings.TrimSpace(entry.Email)
-		if creds != nil {
-			key = creds.accountKey()
-			if creds.Email != "" {
-				email = creds.Email
-			}
-		}
-		if key == "" {
-			key = strings.ToLower(email)
-		}
-		if key == "" {
-			key = strings.TrimSpace(entry.ID)
-		}
-		if key == "" {
-			continue
-		}
-		seen[strings.ToLower(key)] = true
-
-		row := map[string]any{
-			"key":        key,
-			"email":      email,
-			"auth_id":    entry.ID,
-			"auth_index": entry.AuthIndex,
-			"name":       entry.Name,
-			"disabled":   entry.Disabled,
-			"blocked":    false,
-		}
-		if record, ok := byKey[strings.ToLower(key)]; ok {
-			row["disabled"] = record.Disabled
-			row["blocked"] = record.Blocked
-			row["blocked_reason"] = record.BlockedWhy
-			row["failures"] = record.Failures
-			row["last_error"] = record.LastError
-			row["last_used"] = formatUnix(record.LastUsed)
-			row["cooldown_until"] = formatUnixMilli(record.CooldownUntil)
-		}
-		if creds != nil {
-			row["expires_at"] = formatUnix(creds.ExpiresAt)
-		}
-		rows = append(rows, row)
-	}
-
-	// Accounts the plugin knows about but the host no longer lists (a file was
-	// deleted outside the panel) still deserve a row, marked as orphaned —
-	// unless nothing identifies the account, in which case the row would be a
-	// nameless ghost left over from an earlier failed import.
+	rows := make([]map[string]any, 0, len(records))
+	enabled := 0
+	now := nowUnixMilli()
 	for _, record := range records {
-		if seen[strings.ToLower(record.Key)] {
-			continue
-		}
-		if strings.TrimSpace(record.Email) == "" && strings.TrimSpace(record.AuthIndex) == "" {
-			continue
-		}
-		rows = append(rows, map[string]any{
+		row := map[string]any{
 			"key":            record.Key,
 			"email":          record.Email,
 			"auth_id":        record.AuthIndex,
+			"auth_index":     record.AuthIndex,
 			"disabled":       record.Disabled,
 			"blocked":        record.Blocked,
 			"blocked_reason": record.BlockedWhy,
 			"failures":       record.Failures,
 			"last_error":     record.LastError,
 			"last_used":      formatUnix(record.LastUsed),
-			"orphaned":       true,
-		})
-	}
-
-	sort.Slice(rows, func(i, j int) bool {
-		left, _ := rows[i]["email"].(string)
-		right, _ := rows[j]["email"].(string)
-		return strings.ToLower(left) < strings.ToLower(right)
-	})
-
-	enabled := 0
-	for _, row := range rows {
-		if disabled, _ := row["disabled"].(bool); !disabled {
+			"expires_at":     formatUnix(record.ExpiresAt),
+			"calls":          record.CallCount,
+			"cooldown_until": formatUnixMilli(record.CooldownUntil),
+		}
+		if !record.Disabled && !record.Blocked {
 			enabled++
 		}
+		if record.CooldownUntil > now {
+			row["cooling"] = true
+		}
+		rows = append(rows, row)
 	}
 
 	return map[string]any{

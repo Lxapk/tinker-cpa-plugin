@@ -440,3 +440,76 @@ func randomToken() string {
 func timeNowNano() uint64 {
 	return uint64(time.Now().UnixNano())
 }
+
+// liveAccounts returns the accounts that currently exist on disk.
+//
+// The auth files are the inventory; the plugin's cache only annotates them with
+// call counts and cooldowns. Everything user-facing goes through this function so
+// a credential deleted in CPA disappears from the panel instead of lingering as a
+// cached row.
+func liveAccounts() []accountRecord {
+	rows := make([]accountRecord, 0)
+	seen := map[string]bool{}
+	now := nowUnixMilli()
+
+	for _, entry := range tinkerAuthEntries() {
+		creds := readAuthFileCredentials(entry.Path)
+		key := ""
+		email := strings.TrimSpace(entry.Email)
+		if creds != nil {
+			key = creds.accountKey()
+			if creds.Email != "" {
+				email = creds.Email
+			}
+		}
+		if key == "" {
+			key = strings.ToLower(email)
+		}
+		if key == "" {
+			key = strings.TrimSpace(entry.ID)
+		}
+		if key == "" || seen[strings.ToLower(key)] {
+			continue
+		}
+		seen[strings.ToLower(key)] = true
+
+		record := accountRecord{
+			Key:       key,
+			Email:     email,
+			AuthIndex: firstNonEmpty(entry.AuthIndex, entry.ID),
+			// The host's own flag wins: a credential disabled in CPA must read as
+			// disabled here even if the plugin never wrote that itself.
+			Disabled: entry.Disabled,
+		}
+		if cached := state.accounts.lookup(key, email, entry.ID, entry.AuthIndex); cached != nil {
+			record.CallCount = cached.CallCount
+			record.SuccessCount = cached.SuccessCount
+			record.FailureCount = cached.FailureCount
+			record.LastUsed = cached.LastUsed
+			record.LastError = cached.LastError
+			record.Failures = cached.Failures
+			record.CooldownUntil = cached.CooldownUntil
+			record.AddedAt = cached.AddedAt
+			if cached.Disabled {
+				record.Disabled = true
+			}
+			if cached.Blocked && strings.Contains(strings.ToLower(cached.BlockedWhy), "refresh") {
+				record.Blocked = true
+				record.BlockedWhy = cached.BlockedWhy
+			}
+		}
+		if creds != nil && creds.ExpiresAt > 0 {
+			record.ExpiresAt = creds.ExpiresAt
+		}
+		if record.Email == "" {
+			record.Email = key
+		}
+		_ = now
+		rows = append(rows, record)
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		return strings.ToLower(rows[i].Email) < strings.ToLower(rows[j].Email)
+	})
+	return rows
+}
