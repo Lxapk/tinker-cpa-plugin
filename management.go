@@ -458,6 +458,12 @@ func pageHTML() string {
   th { color:#6e6e73; font-weight:500; font-size:12px; }
   .err { color:#c62828; }
   .empty { color:#6e6e73; font-size:13px; padding:12px; }
+  .keyrow { display:flex; gap:8px; margin-top:10px; }
+  .keyrow input { flex:1; min-width:0; border:1px solid #d2d2d7; border-radius:8px;
+                  padding:7px 10px; font-size:13px; background:transparent; color:inherit; }
+  .keyhint { font-size:12px; margin-top:6px; color:#6e6e73; }
+  .keyhint.bad { color:#c62828; }
+  .keyhint.ok { color:#1a7f37; }
   @media (prefers-color-scheme: dark) {
     body { background:#121212; color:#f2f2f2; }
     header,.card,.row { background:#1c1c1e; border-color:#2c2c2e; }
@@ -470,6 +476,12 @@ func pageHTML() string {
 <header>
   <h1>Tinker</h1>
   <div class="sub" id="sub">加载中…</div>
+  <div class="keyrow">
+    <input id="mgmtKey" type="password" placeholder="CPA 管理密钥" autocomplete="off" />
+    <button onclick="saveKey()">保存</button>
+    <button onclick="clearKey()">清除</button>
+  </div>
+  <div class="keyhint" id="keyState"></div>
 </header>
 <div class="cards">
   <div class="card"><b id="c-total">-</b><span>账号</span></div>
@@ -485,11 +497,57 @@ func pageHTML() string {
   <div id="calls"><div class="empty">加载中…</div></div>
 </section>
 <script>
+// The management API always requires the CPA management key. The control panel
+// keeps it in its own storage, which a plugin page cannot read, so the operator
+// pastes it once and it is remembered locally.
 const base = "/v0/management";
+const KEY_NAME = "tinker.mgmtKey";
+function key() {
+  try { return (localStorage.getItem(KEY_NAME) || "").trim(); } catch (e) { return ""; }
+}
+function setKeyState(text, cls) {
+  const el = document.getElementById("keyState");
+  if (!el) return;
+  el.textContent = text;
+  el.className = "keyhint" + (cls ? " " + cls : "");
+}
+window.saveKey = function () {
+  const input = document.getElementById("mgmtKey");
+  const value = (input && input.value || "").trim();
+  if (!value) { setKeyState("请输入密钥", "bad"); return; }
+  try { localStorage.setItem(KEY_NAME, value); } catch (e) { setKeyState("浏览器拒绝保存", "bad"); return; }
+  if (input) input.value = "";
+  refreshKeyState();
+  location.reload();
+};
+window.clearKey = function () {
+  try { localStorage.removeItem(KEY_NAME); } catch (e) {}
+  refreshKeyState();
+  location.reload();
+};
+function refreshKeyState() {
+  const k = key();
+  if (k) setKeyState("已保存管理密钥（" + k.length + " 字符）", "ok");
+  else setKeyState("尚未保存密钥：在 CPA 配置的 remote-management.secret-key 里查看，填入上方输入框。", "warn");
+}
 async function api(path, opts) {
-  const resp = await fetch(base + path, Object.assign({headers:{"Content-Type":"application/json"}}, opts));
-  const body = await resp.json();
-  if (!body.ok) throw new Error((body.error && body.error.message) || "请求失败");
+  const k = key();
+  if (!k) throw new Error("请先填入 CPA 管理密钥");
+  const options = opts || {};
+  options.headers = Object.assign({
+    "Content-Type": "application/json",
+    "Authorization": "Bearer " + k,
+    "X-Management-Key": k
+  }, options.headers || {});
+  const resp = await fetch(base + path, options);
+  const text = await resp.text();
+  let body = null;
+  try { body = JSON.parse(text); } catch (e) {}
+  if (!resp.ok) {
+    const msg = (body && (body.error || body.message)) || ("HTTP " + resp.status);
+    throw new Error(String(msg));
+  }
+  if (!body || !body.ok) throw new Error((body && body.error && body.error.message) || "请求失败");
   return body.result;
 }
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -540,6 +598,13 @@ async function loadCalls() {
     '</tbody></table>';
 }
 (async () => {
+  refreshKeyState();
+  if (!key()) {
+    document.getElementById("sub").textContent = "请先填入 CPA 管理密钥";
+    document.getElementById("accounts").innerHTML = '<div class="empty">填入管理密钥后显示账号。</div>';
+    document.getElementById("calls").innerHTML = '<div class="empty">填入管理密钥后显示调用记录。</div>';
+    return;
+  }
   try { await Promise.all([loadStatus(), loadAccounts(), loadCalls()]); }
   catch (e) { document.getElementById("sub").textContent = "加载失败：" + e.message; }
 })();
