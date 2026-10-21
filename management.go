@@ -453,6 +453,18 @@ func loginFormHTML() string {
   .done.show { display:block; }
   .done .big { font-size:42px; line-height:1; }
   .done h2 { font-size:17px; margin:12px 0 6px; }
+  /* Two actions sit side by side; on a narrow phone they stack rather than
+     shrinking to unreadable widths. */
+  .done-actions {
+    display:flex; gap:10px; justify-content:center;
+    margin-top:18px; flex-wrap:wrap;
+  }
+  /* The form's primary button is full-width by design; inside the success block
+     the two actions must size to their content instead. */
+  .done-actions button,
+  .done-actions button.primary {
+    width:auto; margin-top:0; min-width:118px; flex:0 0 auto;
+  }
   @media (prefers-color-scheme: dark) {
     body { background:#121212; color:#f2f2f2; }
     input { background:#1c1c1e; border-color:#3a3a3c; }
@@ -486,6 +498,10 @@ func loginFormHTML() string {
   <div class="big">✓</div>
   <h2>登录成功</h2>
   <p class="sub" id="doneMsg">账号已写入 CPA，可以关闭本页。</p>
+  <div class="done-actions">
+    <button class="ghost" onclick="closePage()">返回</button>
+    <button class="primary" onclick="loginAnother()">继续登录</button>
+  </div>
 </div>
 
 <script>
@@ -570,6 +586,43 @@ async function submitCode() {
     btn.disabled = false;
   }
 }
+// closePage closes the tab the host opened for this login. A window opened by
+// script can only be closed by script, and one opened by the user cannot at all,
+// so the fallback is to go back rather than leave a dead page on screen.
+function closePage() {
+  window.close();
+  // Still here: the tab was not script-opened. Returning to the panel is the
+  // closest thing to "back" that works in both cases.
+  setTimeout(function () {
+    if (!window.closed) location.href = "/v0/resource/plugins/tinker/home";
+  }, 150);
+}
+
+// loginAnother starts a fresh session and reloads this page with the new state,
+// so the operator can add a second account without going back to CPA.
+async function loginAnother() {
+  try {
+    const k = key();
+    if (!k) throw new Error("未找到 CPA 管理密钥");
+    const resp = await fetch(MGMT + "/tinker/login/new", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + k,
+        "X-Management-Key": k
+      }
+    });
+    const data = await resp.json().catch(function () { return null; });
+    if (!resp.ok || !data || !data.ok) {
+      throw new Error((data && data.message) || ("HTTP " + resp.status));
+    }
+    // Reset the form for the next account and swap in the new state.
+    location.href = data.url;
+  } catch (e) {
+    document.getElementById("doneMsg").textContent = "无法创建新的登录会话：" + e.message;
+  }
+}
+
 if (!state) {
   show("缺少 state，请从 CPA 的授权窗口重新打开本页", "bad");
 }

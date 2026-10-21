@@ -60,8 +60,8 @@ func renderNav() string {
 	for i, item := range []struct{ view, label string }{
 		{"view-accounts", "账号"},
 		{"view-usage", "统计"},
-		{"view-settings", "设置"},
 		{"view-guide", "说明"},
+		{"view-settings", "设置"},
 	} {
 		cls := "tab"
 		if i == 0 {
@@ -245,7 +245,6 @@ func renderTrend(entries []callEntry) string {
 
 // renderSettingsView holds routing, the management key and read-only runtime info.
 func renderSettingsView() string {
-	cfg := state.settings.get()
 	routing := routingStatusJSON()
 
 	var b strings.Builder
@@ -276,9 +275,6 @@ func renderSettingsView() string {
 	b.WriteString(`<div class="row" style="gap:26px;flex-wrap:wrap;font-size:13px">`)
 	b.WriteString(`<span class="note">版本 <b class="mono">` + pluginVersion + `</b></span>`)
 	b.WriteString(`<span class="note">上游 <b class="mono">` + html.EscapeString(tinkerBaseURL) + `</b></span>`)
-	b.WriteString(`<span class="note">默认模型 <b class="mono">` + html.EscapeString(cfg.DefaultModel) + `</b></span>`)
-	b.WriteString(`<span class="note">轮询 <b class="mono">` + fmt.Sprint(cfg.PollIntervalMillis) + `ms</b></span>`)
-	b.WriteString(`<span class="note">超时 <b class="mono">` + fmt.Sprint(cfg.GenerationTimeoutSeconds) + `s</b></span>`)
 	b.WriteString(`</div></div></div>`)
 
 	b.WriteString(`</section>`)
