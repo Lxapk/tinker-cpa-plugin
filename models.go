@@ -479,9 +479,20 @@ func aspectRatioFrom(explicit, size string) string {
 // Gemini's tools accept 0_5K / 1K / 2K / 4K (the newest also 0_5K). A pixel size
 // is bucketed by its long edge, which is how the app's own UI describes them.
 func resolutionFrom(explicit, size string) string {
-	value := strings.ToLower(strings.TrimSpace(explicit))
+	// An explicit resolution wins only if it actually names one. A client that puts
+	// an aspect ratio here (a common mix-up, since both are called "resolution" in
+	// some UIs) must not shadow a perfectly good size — that silently produced
+	// default-resolution images while the request looked correct.
+	if res := parseResolutionLabel(strings.ToLower(strings.TrimSpace(explicit))); res != "" {
+		return res
+	}
+	return parseResolutionLabel(strings.ToLower(strings.TrimSpace(size)))
+}
+
+// parseResolutionLabel maps one string onto the image resolution enum.
+func parseResolutionLabel(value string) string {
 	if value == "" {
-		value = strings.ToLower(strings.TrimSpace(size))
+		return ""
 	}
 	switch value {
 	case "0_5k", "512", "0.5k":

@@ -971,3 +971,29 @@ func TestAuthDataDeclaresRefreshInterval(t *testing.T) {
 
 // timeUnixNow is a small helper so the test reads clearly.
 func timeUnixNow() int64 { return nowUnix() }
+
+// TestAspectRatioInResolutionFallsBackToSize covers a real mix-up: some clients
+// expose only a "resolution" field and the operator types "9:16" into it. That is a
+// ratio, not a resolution, so it must not shadow the size they also set — otherwise
+// the request looks correct while producing default-resolution images.
+func TestAspectRatioInResolutionFallsBackToSize(t *testing.T) {
+	gemini := resolveTool("gemini-3.1-flash-image")
+
+	// ratio in resolution, real value in size
+	inputs := buildToolInputs(gemini, "x", []byte(`{"resolution":"9:16","size":"2k"}`))
+	if inputs["resolution"] != "2K" {
+		t.Errorf("resolution=9:16 时应回退到 size=2k，得到 %v", inputs["resolution"])
+	}
+
+	// ratio in resolution, nothing else: no resolution must be sent
+	inputs = buildToolInputs(gemini, "x", []byte(`{"resolution":"9:16"}`))
+	if _, has := inputs["resolution"]; has {
+		t.Errorf("只有比例时不应写入 resolution，得到 %v", inputs["resolution"])
+	}
+
+	// a real resolution still wins over size
+	inputs = buildToolInputs(gemini, "x", []byte(`{"resolution":"4K","size":"1024x1024"}`))
+	if inputs["resolution"] != "4K" {
+		t.Errorf("显式 4K 应优先，得到 %v", inputs["resolution"])
+	}
+}
