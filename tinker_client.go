@@ -26,13 +26,9 @@ const (
 	// the values from the 1.0.18 APK this plugin was written against.
 	tinkerAppVersion = "1.0.18"
 	tinkerAppBuild   = "870"
-	// Device identity. A real Pixel 8 profile: the server compares these against
-	// nothing in particular, but a plausible, stable set reads as one physical
-	// device rather than an anonymous script.
-	tinkerOSVersion  = "14"
-	tinkerDeviceModel = "Pixel 8"
-	tinkerDeviceName  = "Pixel 8"
-	tinkerLocale      = "zh-CN"
+	// tinkerLocale is the only device-adjacent value sent. See applyClientHeaders
+	// for why the rest are deliberately omitted.
+	tinkerLocale = "zh-CN"
 )
 
 // tinkerClient is the thin GraphQL/REST client used by every capability.
@@ -658,24 +654,26 @@ func (c *tinkerClient) fetchImage(ctx context.Context, rawURL string) ([]byte, s
 
 // applyClientHeaders sets the request context the app sends on every call.
 //
-// The server derives per-account trust from these: its risk model reports
-// "Device: <status>" and "Latest class: <classification>" alongside the IP events,
-// and an account that presents no device information has no positive evidence to
-// weigh. Sending only the client name marked every account as an unknown client,
-// which is exactly the state that gets generation restricted.
+// X-Device-Model and X-Device-Name are deliberately NOT sent. The server groups
+// accounts by device: its admin trust model exposes, per account,
 //
-// Values mirror the Android build (package com.shopify.tinker, 1.0.18 / 870).
-// X-Client-Version is "<versionName>-<versionCode>" — the app joins the two with a
-// dash and omits either half when null, so the separator only appears when both
-// exist.
+//	linkedAccountEvidence { email, sharedIpEventAt, sharedDeviceModels, signals }
+//
+// so one constant model string stamps every account behind a proxy as "same
+// device", which is the shared-device signal that links them. Emitting "Pixel 8"
+// for a whole batch of accounts asserts that they all run on one phone — an
+// accusation the plugin cannot back up and does not need to make.
+//
+// Sending partial identity is the honest position: the transport is a server, not
+// a handset, so it claims no device rather than claiming a false one. Locale is
+// kept because it affects nothing but response language.
+//
+// X-Client-Version is "<versionName>-<versionCode>" from the 1.0.18 APK; the app
+// joins the two with a dash and omits either half when null.
 func applyClientHeaders(req *http.Request, accessToken string) {
 	req.Header.Set("X-Client-Name", tinkerClientName)
 	req.Header.Set("X-Client-Version", tinkerAppVersion+"-"+tinkerAppBuild)
 	req.Header.Set("X-Platform", "android")
-	req.Header.Set("X-OS-Version", tinkerOSVersion)
-	req.Header.Set("X-Device-Type", "mobile")
-	req.Header.Set("X-Device-Model", tinkerDeviceModel)
-	req.Header.Set("X-Device-Name", tinkerDeviceName)
 	req.Header.Set("Shopify-Client-Locale", tinkerLocale)
 	if accessToken != "" {
 		req.Header.Set("Authorization", "Bearer "+accessToken)

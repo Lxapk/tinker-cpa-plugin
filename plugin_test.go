@@ -1016,16 +1016,20 @@ func TestClientHeadersMatchApp(t *testing.T) {
 		"X-Client-Name":         "tinker-mobile",
 		"X-Client-Version":      "1.0.18-870",
 		"X-Platform":            "android",
-		"X-OS-Version":          "14",
-		"X-Device-Type":         "mobile",
-		"X-Device-Model":        "Pixel 8",
-		"X-Device-Name":         "Pixel 8",
 		"Shopify-Client-Locale": "zh-CN",
 		"Authorization":         "Bearer tok",
 	}
 	for key, value := range want {
 		if got := req.Header.Get(key); got != value {
 			t.Errorf("%s = %q, 期望 %q", key, got, value)
+		}
+	}
+
+	// No device identity. The server links accounts by sharedDeviceModels, so a
+	// constant model string would tie every account behind the proxy to one phone.
+	for _, key := range []string{"X-Device-Model", "X-Device-Name", "X-Device-Type", "X-OS-Version"} {
+		if got := req.Header.Get(key); got != "" {
+			t.Errorf("%s 不应发送，得到 %q（会被判为共享设备）", key, got)
 		}
 	}
 }
