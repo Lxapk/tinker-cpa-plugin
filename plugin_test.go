@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"context"
 	"net/http"
+	"path/filepath"
 	"os"
 	"strings"
 	"testing"
@@ -1048,5 +1050,77 @@ func TestClientVersionIsNameAndCode(t *testing.T) {
 	// No token: the header must be absent rather than "Bearer ".
 	if got := req.Header.Get("Authorization"); got != "" {
 		t.Errorf("无 token 时不应设置 Authorization，得到 %q", got)
+	}
+}
+
+// TestAccountProxyIsReadFromAuthFile covers per-account egress.
+//
+// CPA keeps proxy_url in the auth file but does not forward it to .so plugins —
+// ExecutorRequest.HTTPClient, the host's own transport, is json:"-" and only exists
+// for statically linked plugins. The request does carry AuthAttributes["path"], so
+// reading the file is the only way a plugin honours the operator's proxy setting.
+//
+// Without this every account leaves through the server's IP, which is exactly what
+// the server's sharedIpEventAt signal groups accounts by.
+func TestAccountProxyIsReadFromAuthFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tinker-acct.json")
+
+	// No proxy configured: empty result, not an error.
+	os.WriteFile(path, []byte(`{"email":"a@b.c","access_token":"t"}`), 0o600)
+	if got := accountProxyURL(map[string]string{"path": path}); got != "" {
+		t.Errorf("未配置代理时应返回空，得到 %q", got)
+	}
+
+	// Configured: returned verbatim.
+	os.WriteFile(path, []byte(`{"proxy_url":"http://127.0.0.1:7890"}`), 0o600)
+	if got := accountProxyURL(map[string]string{"path": path}); got != "http://127.0.0.1:7890" {
+		t.Errorf("应读到代理，得到 %q", got)
+	}
+
+	// Missing path or unreadable file must not panic or invent a value.
+	if got := accountProxyURL(nil); got != "" {
+		t.Errorf("无 attributes 时应为空，得到 %q", got)
+	}
+	if got := accountProxyURL(map[string]string{"path": filepath.Join(dir, "nope.json")}); got != "" {
+		t.Errorf("文件不存在时应为空，得到 %q", got)
+	}
+}
+
+// TestProxyClientCacheKeepsIdentity: the same proxy must reuse one client, and no
+// proxy must reuse the shared one, so connection pools are not rebuilt per call.
+func TestProxyClientCacheKeepsIdentity(t *testing.T) {
+	plain := clientForProxy("")
+	if plain != upstream {
+		t.Error("空代理应返回共享 client")
+	}
+
+	first := clientForProxy("http://127.0.0.1:8888")
+	second := clientForProxy("http://127.0.0.1:8888")
+	if first != second {
+		t.Error("相同代理应复用同一个 client")
+	}
+	if first == upstream {
+		t.Error("配置的代理不应回落到共享 client")
+	}
+
+	other := clientForProxy("http://127.0.0.1:9999")
+	if other == first {
+		t.Error("不同代理应是不同 client")
+	}
+}
+
+// TestProxyTravelsThroughContext: the account's proxy rides the request context so
+// every upstream call picks it up without threading a parameter through each layer.
+func TestProxyTravelsThroughContext(t *testing.T) {
+	ctx := withProxyURL(context.Background(), "http://127.0.0.1:7890")
+	if got := proxyFromContext(ctx); got != "http://127.0.0.1:7890" {
+		t.Errorf("context 中代理 = %q", got)
+	}
+	if got := proxyFromContext(context.Background()); got != "" {
+		t.Errorf("空 context 应无代理，得到 %q", got)
+	}
+	if got := withProxyURL(context.Background(), "  "); proxyFromContext(got) != "" {
+		t.Error("空白代理不应写入 context")
 	}
 }

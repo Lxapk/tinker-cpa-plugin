@@ -9,8 +9,11 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
+	"os"
 	"net/textproto"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -105,7 +108,7 @@ func (c *tinkerClient) doJSON(ctx context.Context, method, path string, body []b
 	req.Header.Set("Accept-Encoding", "identity")
 	applyClientHeaders(req, accessToken)
 
-	resp, errDo := c.http.Do(req)
+	resp, errDo := clientForProxy(proxyFromContext(ctx)).http.Do(req)
 	if errDo != nil {
 		return nil, fmt.Errorf("上游请求失败: %w", errDo)
 	}
@@ -679,3 +682,88 @@ func applyClientHeaders(req *http.Request, accessToken string) {
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 	}
 }
+
+// withProxyURL attaches the account's proxy to the context.
+func withProxyURL(ctx context.Context, proxyURL string) context.Context {
+	if strings.TrimSpace(proxyURL) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, proxyKey{}, proxyURL)
+}
+
+// proxyFromContext returns the proxy attached by withProxyURL, if any.
+func proxyFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	value, _ := ctx.Value(proxyKey{}).(string)
+	return value
+}
+
+type proxyKey struct{}
+
+// accountProxyURL reads the per-account proxy configured on this auth entry.
+//
+// CPA stores proxy_url in the auth file and does not forward it to .so plugins:
+// the ExecutorRequest carries the host's own HTTPClient to apply transport policy,
+// but that field is marked json:"-" and only exists for statically linked plugins.
+// What the request does carry is AuthAttributes["path"], the auth file's absolute
+// path, so the value is read from there.
+//
+// This matters because the server groups accounts by egress IP (sharedIpEventAt in
+// its trust model). Without this, every account spends the same server IP and the
+// operator's per-account proxies silently do nothing.
+func accountProxyURL(authAttributes map[string]string) string {
+	path := strings.TrimSpace(authAttributes["path"])
+	if path == "" {
+		return ""
+	}
+	raw, errRead := os.ReadFile(path)
+	if errRead != nil {
+		return ""
+	}
+	var file struct {
+		ProxyURL string `json:"proxy_url"`
+	}
+	if errUnmarshal := json.Unmarshal(raw, &file); errUnmarshal != nil {
+		return ""
+	}
+	return strings.TrimSpace(file.ProxyURL)
+}
+
+// clientForProxy returns a client routed through proxyURL, or the shared client
+// when no proxy is configured.
+//
+// Clients are cached by proxy URL: building a Transport per request would open a
+// new connection pool every call and keep idle sockets around until they time out.
+func clientForProxy(proxyURL string) *tinkerClient {
+	if proxyURL == "" {
+		return upstream
+	}
+	clientCacheMu.Lock()
+	defer clientCacheMu.Unlock()
+	if client, ok := clientCache[proxyURL]; ok {
+		return client
+	}
+	parsed, errParse := url.Parse(proxyURL)
+	if errParse != nil {
+		// A malformed proxy must not fail the call silently: fall back to direct
+		// rather than leaving the account unable to do anything.
+		return upstream
+	}
+	client := &tinkerClient{http: &http.Client{
+		Timeout: 120 * time.Second,
+		Transport: &http.Transport{
+			Proxy:               http.ProxyURL(parsed),
+			MaxIdleConnsPerHost: 4,
+			IdleConnTimeout:     60 * time.Second,
+		},
+	}}
+	clientCache[proxyURL] = client
+	return client
+}
+
+var (
+	clientCacheMu sync.Mutex
+	clientCache   = map[string]*tinkerClient{}
+)

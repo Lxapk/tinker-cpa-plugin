@@ -104,7 +104,7 @@ func executorExecute(request []byte) ([]byte, error) {
 	}
 
 	started := time.Now()
-	result, used, errRun := runWithAccount(request, creds, req.AuthID, ref,
+	result, used, errRun := runWithAccount(request, creds, req.AuthID, req.AuthAttributes, ref,
 		buildToolInputs(ref, prompt, body), collectImageURLs(chatReq.Messages))
 	if errRun != nil {
 		state.logs.add(callEntry{
@@ -167,7 +167,7 @@ func executeImages(req executorRequest, body []byte, creds *tinkerCredentials) (
 	prompt = limitPrompt(prompt, ref)
 
 	started := time.Now()
-	result, used, errRun := runWithAccount(nil, creds, req.AuthID, ref,
+	result, used, errRun := runWithAccount(nil, creds, req.AuthID, req.AuthAttributes, ref,
 		buildToolInputs(ref, prompt, body), imagesFromImagesRequest(imgReq))
 	if errRun != nil {
 		state.logs.add(callEntry{
@@ -241,7 +241,7 @@ func executorExecuteStream(request []byte) ([]byte, error) {
 	// content: a client that times out waiting for its first byte gets nothing
 	// from an empty preface.
 	started := time.Now()
-	result, used, errRun := runWithAccount(request, creds, req.AuthID, ref,
+	result, used, errRun := runWithAccount(request, creds, req.AuthID, req.AuthAttributes, ref,
 		buildToolInputs(ref, prompt, body), collectImageURLs(chatReq.Messages))
 	if errRun != nil {
 		return errorEnvelope("upstream_error", errRun.Error(), httpStatusOf(errRun)), nil
@@ -318,7 +318,7 @@ func buildSSEFrames(id, model, text string) []pluginapi.ExecutorStreamChunk {
 // whether to retry. isAuthError means the token is dead and a different account
 // may well work; a quota error means the same. A transport failure is retried
 // once on the same account, since it says nothing about the credential.
-func runWithAccount(request []byte, creds *tinkerCredentials, authID string, ref toolRef, inputs map[string]any, imageURLs []string) (*generationResult, *tinkerCredentials, error) {
+func runWithAccount(request []byte, creds *tinkerCredentials, authID string, authAttributes map[string]string, ref toolRef, inputs map[string]any, imageURLs []string) (*generationResult, *tinkerCredentials, error) {
 	cfg := state.settings.get()
 	maxAttempts := cfg.MaxRotate
 	if maxAttempts <= 0 {
@@ -330,7 +330,8 @@ func runWithAccount(request []byte, creds *tinkerCredentials, authID string, ref
 	var lastErr error
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		hCtx, cancel := context.WithTimeout(context.Background(),
+		hCtx, cancel := context.WithTimeout(withProxyURL(context.Background(),
+			accountProxyURL(authAttributes)),
 			time.Duration(cfg.GenerationTimeoutSeconds+60)*time.Second)
 
 		usable, errToken := withToken(hCtx, current, currentAuthID)
@@ -605,7 +606,7 @@ func executeVideo(req executorRequest, body []byte, creds *tinkerCredentials) ([
 	}
 
 	started := time.Now()
-	result, used, errRun := runWithAccount(nil, creds, req.AuthID, ref, inputs,
+	result, used, errRun := runWithAccount(nil, creds, req.AuthID, req.AuthAttributes, ref, inputs,
 		imagesFromVideoRequest(videoReq))
 	if errRun != nil {
 		state.logs.add(callEntry{
