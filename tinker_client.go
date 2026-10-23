@@ -22,6 +22,17 @@ const (
 	// sends; the server is lenient about it but the gateway logic keys some
 	// behaviour off it.
 	tinkerClientName = "tinker-mobile"
+	// The app builds X-Client-Version as "<versionName>-<versionCode>"; these are
+	// the values from the 1.0.18 APK this plugin was written against.
+	tinkerAppVersion = "1.0.18"
+	tinkerAppBuild   = "870"
+	// Device identity. A real Pixel 8 profile: the server compares these against
+	// nothing in particular, but a plausible, stable set reads as one physical
+	// device rather than an anonymous script.
+	tinkerOSVersion  = "14"
+	tinkerDeviceModel = "Pixel 8"
+	tinkerDeviceName  = "Pixel 8"
+	tinkerLocale      = "zh-CN"
 )
 
 // tinkerClient is the thin GraphQL/REST client used by every capability.
@@ -96,11 +107,7 @@ func (c *tinkerClient) doJSON(ctx context.Context, method, path string, body []b
 	// Never let the transport negotiate gzip: the sizes here are small and a
 	// transparent decode failure surfaces as a JSON parse error much later.
 	req.Header.Set("Accept-Encoding", "identity")
-	req.Header.Set("X-Client-Name", tinkerClientName)
-	req.Header.Set("X-Platform", "android")
-	if accessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+accessToken)
-	}
+	applyClientHeaders(req, accessToken)
 
 	resp, errDo := c.http.Do(req)
 	if errDo != nil {
@@ -579,9 +586,7 @@ func (c *tinkerClient) uploadImage(ctx context.Context, accessToken string, data
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-Client-Name", tinkerClientName)
-	req.Header.Set("X-Platform", "android")
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	applyClientHeaders(req, accessToken)
 
 	resp, errDo := c.http.Do(req)
 	if errDo != nil {
@@ -649,4 +654,30 @@ func (c *tinkerClient) fetchImage(ctx context.Context, rawURL string) ([]byte, s
 		contentType = "image/jpeg"
 	}
 	return data, contentType, nil
+}
+
+// applyClientHeaders sets the request context the app sends on every call.
+//
+// The server derives per-account trust from these: its risk model reports
+// "Device: <status>" and "Latest class: <classification>" alongside the IP events,
+// and an account that presents no device information has no positive evidence to
+// weigh. Sending only the client name marked every account as an unknown client,
+// which is exactly the state that gets generation restricted.
+//
+// Values mirror the Android build (package com.shopify.tinker, 1.0.18 / 870).
+// X-Client-Version is "<versionName>-<versionCode>" — the app joins the two with a
+// dash and omits either half when null, so the separator only appears when both
+// exist.
+func applyClientHeaders(req *http.Request, accessToken string) {
+	req.Header.Set("X-Client-Name", tinkerClientName)
+	req.Header.Set("X-Client-Version", tinkerAppVersion+"-"+tinkerAppBuild)
+	req.Header.Set("X-Platform", "android")
+	req.Header.Set("X-OS-Version", tinkerOSVersion)
+	req.Header.Set("X-Device-Type", "mobile")
+	req.Header.Set("X-Device-Model", tinkerDeviceModel)
+	req.Header.Set("X-Device-Name", tinkerDeviceName)
+	req.Header.Set("Shopify-Client-Locale", tinkerLocale)
+	if accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
 }

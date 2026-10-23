@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -995,5 +996,53 @@ func TestAspectRatioInResolutionFallsBackToSize(t *testing.T) {
 	inputs = buildToolInputs(gemini, "x", []byte(`{"resolution":"4K","size":"1024x1024"}`))
 	if inputs["resolution"] != "4K" {
 		t.Errorf("显式 4K 应优先，得到 %v", inputs["resolution"])
+	}
+}
+
+// TestClientHeadersMatchApp pins the request-context headers.
+//
+// The server's risk model reports "Device: <status>" and "Latest class:
+// <classification>" per account. A client that sends only X-Client-Name presents no
+// device evidence, and accounts in that state are the ones that end up with
+// generation restricted. These eight headers are what the app sends.
+func TestClientHeadersMatchApp(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://example.test/graphql", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyClientHeaders(req, "tok")
+
+	want := map[string]string{
+		"X-Client-Name":         "tinker-mobile",
+		"X-Client-Version":      "1.0.18-870",
+		"X-Platform":            "android",
+		"X-OS-Version":          "14",
+		"X-Device-Type":         "mobile",
+		"X-Device-Model":        "Pixel 8",
+		"X-Device-Name":         "Pixel 8",
+		"Shopify-Client-Locale": "zh-CN",
+		"Authorization":         "Bearer tok",
+	}
+	for key, value := range want {
+		if got := req.Header.Get(key); got != value {
+			t.Errorf("%s = %q, 期望 %q", key, got, value)
+		}
+	}
+}
+
+// TestClientVersionIsNameAndCode: the app joins versionName and versionCode with a
+// dash, so the header must not be just the name.
+func TestClientVersionIsNameAndCode(t *testing.T) {
+	if tinkerAppVersion == "" || tinkerAppBuild == "" {
+		t.Fatal("版本与构建号都必须设置")
+	}
+	req, _ := http.NewRequest(http.MethodGet, "https://example.test", nil)
+	applyClientHeaders(req, "")
+	if got := req.Header.Get("X-Client-Version"); got != tinkerAppVersion+"-"+tinkerAppBuild {
+		t.Errorf("X-Client-Version = %q", got)
+	}
+	// No token: the header must be absent rather than "Bearer ".
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Errorf("无 token 时不应设置 Authorization，得到 %q", got)
 	}
 }
