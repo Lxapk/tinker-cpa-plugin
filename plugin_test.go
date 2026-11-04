@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"context"
+	"encoding/base64"
 	"net/http"
 	"path/filepath"
 	"os"
@@ -1003,10 +1004,9 @@ func TestAspectRatioInResolutionFallsBackToSize(t *testing.T) {
 
 // TestClientHeadersMatchApp pins the request-context headers.
 //
-// The server's risk model reports "Device: <status>" and "Latest class:
-// <classification>" per account. A client that sends only X-Client-Name presents no
-// device evidence, and accounts in that state are the ones that end up with
-// generation restricted. These eight headers are what the app sends.
+// The app sends all eight. The server keeps clientName / clientVersion / platform /
+// deviceType / deviceModel / osMajor / deviceNameHash per request, so a thinner set
+// is distinguishable from the app.
 func TestClientHeadersMatchApp(t *testing.T) {
 	req, err := http.NewRequest(http.MethodPost, "https://example.test/graphql", nil)
 	if err != nil {
@@ -1014,25 +1014,66 @@ func TestClientHeadersMatchApp(t *testing.T) {
 	}
 	applyClientHeaders(req, "tok")
 
-	want := map[string]string{
+	for key, want := range map[string]string{
 		"X-Client-Name":         "tinker-mobile",
 		"X-Client-Version":      "1.0.18-870",
 		"X-Platform":            "android",
+		"X-Device-Type":         "mobile",
 		"Shopify-Client-Locale": "zh-CN",
 		"Authorization":         "Bearer tok",
-	}
-	for key, value := range want {
-		if got := req.Header.Get(key); got != value {
-			t.Errorf("%s = %q, 期望 %q", key, got, value)
+	} {
+		if got := req.Header.Get(key); got != want {
+			t.Errorf("%s = %q, 期望 %q", key, got, want)
 		}
 	}
+	for _, key := range []string{"X-OS-Version", "X-Device-Model", "X-Device-Name"} {
+		if req.Header.Get(key) == "" {
+			t.Errorf("%s 不应为空", key)
+		}
+	}
+}
 
-	// No device identity. The server links accounts by sharedDeviceModels, so a
-	// constant model string would tie every account behind the proxy to one phone.
-	for _, key := range []string{"X-Device-Model", "X-Device-Name", "X-Device-Type", "X-OS-Version"} {
-		if got := req.Header.Get(key); got != "" {
-			t.Errorf("%s 不应发送，得到 %q（会被判为共享设备）", key, got)
+// TestDeviceProfileIsStablePerAccount: the same account must always present the
+// same handset. A device that changes between calls is its own anomaly.
+func TestDeviceProfileIsStablePerAccount(t *testing.T) {
+	first := deviceProfileFor("account-474610")
+	for i := 0; i < 8; i++ {
+		if got := deviceProfileFor("account-474610"); got != first {
+			t.Fatalf("同一账号的设备资料发生变化: %#v -> %#v", first, got)
 		}
+	}
+}
+
+// TestDeviceProfileDiffersAcrossAccounts is the point of deriving instead of fixing:
+// a constant model string stamps every account as the same handset, which is exactly
+// the sharedDeviceModels signal the server uses to link accounts into one cluster.
+func TestDeviceProfileDiffersAcrossAccounts(t *testing.T) {
+	accounts := []string{"acct-1", "acct-2", "acct-3", "acct-4", "acct-5", "acct-6", "acct-7", "acct-8"}
+	distinct := map[string]bool{}
+	for _, account := range accounts {
+		distinct[deviceProfileFor(account).model] = true
+	}
+	if len(distinct) < 2 {
+		t.Fatalf("%d 个账号只分到 %d 种机型，等于共用设备", len(accounts), len(distinct))
+	}
+}
+
+// TestAccountKeySurvivesTokenRotation: the key must come from the JWT subject, not
+// the token string, or every refresh would look like a new device.
+func TestAccountKeySurvivesTokenRotation(t *testing.T) {
+	claims := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"user-abc","exp":1}`))
+	older := "header." + claims + ".sig-one"
+	newer := "header." + claims + ".sig-two"
+
+	if accountKeyFromToken(older) != accountKeyFromToken(newer) {
+		t.Error("刷新令牌后账号标识不应变化")
+	}
+	if accountKeyFromToken(older) != "user-abc" {
+		t.Errorf("应从 JWT sub 取账号标识，得到 %q", accountKeyFromToken(older))
+	}
+	// 非 JWT 输入退回整串哈希，仍然稳定。
+	if accountKeyFromToken("opaque") != "opaque" {
+		t.Error("非 JWT 应退回原串")
 	}
 }
 
