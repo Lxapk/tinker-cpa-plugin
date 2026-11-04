@@ -1,6 +1,6 @@
 module github.com/Lxapk/tinker-cpa-plugin
 
-go 1.26.0
+go 1.26.10
 
 require (
 	github.com/router-for-me/CLIProxyAPI/v8 v8.0.53
