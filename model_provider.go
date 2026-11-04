@@ -3,7 +3,7 @@ package main
 import (
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // model_provider.go wires the Tinker tool catalogue into CPA's model registry.

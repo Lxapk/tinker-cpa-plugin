@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 const (
@@ -18,7 +18,7 @@ const (
 	pluginName = "tinker"
 	// pluginDisplayName is what a person reads.
 	pluginDisplayName = "Tinker"
-	pluginVersion     = "0.1.2"
+	pluginVersion     = "0.1.3"
 	pluginAuthor      = "Lxapk"
 	pluginRepo        = "https://github.com/Lxapk/tinker-cpa-plugin"
 )

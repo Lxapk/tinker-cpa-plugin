@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // This file implements Tinker's login as a self-contained page instead of an
